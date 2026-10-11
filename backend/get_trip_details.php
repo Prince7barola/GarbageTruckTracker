@@ -17,7 +17,7 @@ try {
     // Query trip metadata
     $historyCheck = $conn->query("SHOW TABLES LIKE 'driver_trip_history'");
     if ($historyCheck->rowCount() > 0) {
-        $stmt = $conn->prepare("SELECT * FROM driver_trip_history WHERE trip_id = ?");
+        $stmt = $conn->prepare("SELECT h.*, COALESCE(h.truck_id, u.preferred_truck, 'Truck not recorded') as truck_id FROM driver_trip_history h LEFT JOIN users u ON h.driver_id = u.user_id WHERE h.trip_id = ?");
         $stmt->execute([$trip_id]);
         $trip = $stmt->fetch(PDO::FETCH_ASSOC);
     }
@@ -25,7 +25,7 @@ try {
     if (!$trip) {
         $routesCheck = $conn->query("SHOW TABLES LIKE 'driver_routes'");
         if ($routesCheck->rowCount() > 0) {
-            $stmt = $conn->prepare("SELECT route_id as trip_id, driver_id, route_name, route_date, total_distance_km, total_stops as detected_stops_count, route_status, created_at as start_time FROM driver_routes WHERE route_id = ?");
+            $stmt = $conn->prepare("SELECT dr.route_id as trip_id, dr.driver_id, dr.route_name, dr.route_date, dr.total_distance_km, dr.total_stops as detected_stops_count, dr.route_status, dr.created_at as start_time, COALESCE(u.preferred_truck, 'Truck not recorded') as truck_id FROM driver_routes dr LEFT JOIN users u ON dr.driver_id = u.user_id WHERE dr.route_id = ?");
             $stmt->execute([$trip_id]);
             $trip = $stmt->fetch(PDO::FETCH_ASSOC);
         }

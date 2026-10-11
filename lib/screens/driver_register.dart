@@ -51,7 +51,6 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
   bool _isLoading = false;
   bool _obs1 = true;
   bool _obs2 = true;
-  bool _termsAccepted = false;
   final Map<String, Timer?> _errorTimers = {};
   final ApiService _apiService = ApiService();
 
@@ -406,7 +405,6 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
     );
 
     if (accepted == true && mounted) {
-      setState(() => _termsAccepted = true);
       CustomSnackBar.show(
         context,
         message: successMsg ?? "Registration submitted. Your account is pending administrator approval. You can log in once approved.",
@@ -479,8 +477,6 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
                                         _buildInput(_phoneController, AppLocalizations.get('contact_number'), AppLocalizations.get('contact_number'), icon: Icons.phone_android_outlined, focus: _phoneFocus, error: _phoneError),
                                         _buildInput(_truckController, AppLocalizations.get('preferred_truck'), AppLocalizations.get('preferred_truck'), action: TextInputAction.done, icon: Icons.local_shipping_outlined, error: null),
 
-                                        const SizedBox(height: 32),
-                                        _buildTermsCheckbox(),
                                         const SizedBox(height: 32),
                                         HoverActionButton(
                                           text: AppLocalizations.get('register_as_driver'),
@@ -591,48 +587,6 @@ class _DriverRegisterScreenState extends State<DriverRegisterScreen> {
         const SizedBox(height: 12),
         Text(AppLocalizations.get('brgy_footer'), style: ResponsiveText.footer(context, bold: true)),
         Text(AppLocalizations.get('all_rights_reserved'), style: ResponsiveText.footer(context, size: 10)),
-      ],
-    );
-  }
-
-  Widget _buildTermsCheckbox() {
-    return Row(
-      children: [
-        SizedBox(
-          height: 24, width: 24,
-          child: Checkbox(
-            value: _termsAccepted,
-            onChanged: (v) => setState(() => _termsAccepted = v ?? false),
-            activeColor: AppColors.tealText,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Wrap(
-            children: [
-              Text(AppLocalizations.get('agree_terms'), style: ResponsiveText.body(context)),
-              const SizedBox(width: 4),
-              _HoverZoomLink(
-                onTap: () {
-                  _clearAllErrors();
-                  LegalAgreementDialog.show(context, isTerms: true);
-                },
-                child: Text(AppLocalizations.get('terms_conditions'), style: ResponsiveText.link(context).copyWith(decoration: TextDecoration.underline)),
-              ),
-              const SizedBox(width: 4),
-              Text(AppLocalizations.get('and'), style: ResponsiveText.body(context)),
-              const SizedBox(width: 4),
-              _HoverZoomLink(
-                onTap: () {
-                  _clearAllErrors();
-                  LegalAgreementDialog.show(context, isTerms: false);
-                },
-                child: Text(AppLocalizations.get('privacy_policy'), style: ResponsiveText.link(context).copyWith(decoration: TextDecoration.underline)),
-              ),
-            ],
-          ),
-        ),
       ],
     );
   }

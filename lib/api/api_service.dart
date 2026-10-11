@@ -343,4 +343,59 @@ class ApiService {
   Future<Response> saveTripHistory(Map<String, dynamic> tripData) async {
     return await _dio.post('save_trip_history.php', data: tripData);
   }
+
+  Future<Response> deleteTrip(String tripId) async {
+    return await _dio.post('delete_trip.php', data: {'trip_id': tripId});
+  }
+
+  Future<Response> getEtaPerformance({
+    String? area,
+    String? startDate,
+    String? endDate,
+    String? source,
+  }) async {
+    final Map<String, dynamic> queryParams = {};
+    if (area != null && area.isNotEmpty) queryParams['area'] = area;
+    if (startDate != null && startDate.isNotEmpty) queryParams['start_date'] = startDate;
+    if (endDate != null && endDate.isNotEmpty) queryParams['end_date'] = endDate;
+    if (source != null && source.isNotEmpty) queryParams['source'] = source;
+
+    return await _dio.get('get_eta_performance.php', queryParameters: queryParams);
+  }
+
+  Future<Response> getLoadHistory({
+    String? startDate,
+    String? endDate,
+    String? truckId,
+  }) async {
+    final Map<String, dynamic> queryParams = {};
+    if (startDate != null && startDate.isNotEmpty) queryParams['start_date'] = startDate;
+    if (endDate != null && endDate.isNotEmpty) queryParams['end_date'] = endDate;
+    if (truckId != null && truckId.isNotEmpty) queryParams['truck_id'] = truckId;
+
+    return await _dio.get('get_load_history.php', queryParameters: queryParams);
+  }
+
+  Future<Response> updateTripWeight({
+    required String tripId,
+    required double weightKg,
+  }) async {
+    return await _dio.post('update_trip_weight.php', data: {
+      'trip_id': tripId,
+      'weight_kg': weightKg,
+    });
+  }
+
+  Future<Response> getAiLoadSummary({
+    String? startDate,
+    String? endDate,
+    String? truckId,
+  }) async {
+    final Map<String, dynamic> queryParams = {};
+    if (startDate != null && startDate.isNotEmpty) queryParams['start_date'] = startDate;
+    if (endDate != null && endDate.isNotEmpty) queryParams['end_date'] = endDate;
+    if (truckId != null && truckId.isNotEmpty) queryParams['truck_id'] = truckId;
+
+    return await _dio.get('get_ai_load_summary.php', queryParameters: queryParams);
+  }
 }

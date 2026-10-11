@@ -13,6 +13,7 @@ import '../utils/session_manager.dart';
 import '../utils/app_theme.dart';
 import '../utils/system_logger.dart';
 import '../utils/responsive.dart';
+import '../utils/prediction_engine.dart';
 import 'analytics_screen.dart';
 import 'track_trucks_screen.dart';
 import 'complaints_screen.dart';
@@ -56,6 +57,12 @@ class _AdminDashboardState extends State<AdminDashboard> with TickerProviderStat
   int _totalComplaints = 0;
   int _activeTrucks = 0;
   int _onlineDriversCount = 0;
+  final Set<String> _archivedDriverIds = {};
+  final Set<String> _archivedDriverNames = {};
+  final Set<String> _validDriverIds = {};
+  final Set<String> _validDriverNames = {};
+  final Set<String> _genuinelyOnlineDriverIds = {};
+  final Set<String> _genuinelyOnlineDriverNamesUpper = {};
   StreamSubscription? _usersPresenceSubscription;
   int _pendingComplaints = 0;
   int _inProgressComplaints = 0;
@@ -332,25 +339,52 @@ class _AdminDashboardState extends State<AdminDashboard> with TickerProviderStat
 
         int onlineCount = 0;
         final int now = DateTime.now().millisecondsSinceEpoch;
+        final Set<String> archivedIds = {};
+        final Set<String> archivedNames = {};
+        final Set<String> validDriverIds = {};
+        final Set<String> validDriverNames = {};
+        final Set<String> genuinelyOnlineDriverIds = {};
+        final Set<String> genuinelyOnlineDriverNamesUpper = {};
 
         debugPrint("=== ADMIN DASHBOARD ONLINE DRIVERS TRACE ===");
         data.forEach((key, value) {
           if (value != null && value is Map) {
             final String role = (value['role'] ?? '').toString().toLowerCase();
-            if (role == 'driver') {
-              final String driverUid = key.toString();
-              final String driverName = (value['name'] ?? value['username'] ?? 'Driver').toString();
+            final String driverUid = key.toString();
+            final String driverName = (value['name'] ?? value['username'] ?? 'Driver').toString();
+            final String status = (value['account_status'] ?? '').toString().toLowerCase();
+            final dynamic isArchivedRaw = value['is_archived'] ?? value['isArchived'];
+            final bool isArchived = status == 'archived' ||
+                isArchivedRaw == 1 ||
+                isArchivedRaw == '1' ||
+                isArchivedRaw == true ||
+                isArchivedRaw == 'true';
+
+            if (isArchived) {
+              archivedIds.add(driverUid);
+              if (driverName.isNotEmpty) archivedNames.add(driverName.toUpperCase());
+            } else if (role == 'driver') {
+              validDriverIds.add(driverUid);
+              if (driverName.isNotEmpty) validDriverNames.add(driverName.toUpperCase());
+
               final bool isOnline = value['isOnline'] == true;
+              final String userStatus = (value['status'] ?? '').toString().toUpperCase();
               final dynamic lastSeenRaw = value['lastSeen'];
               final int lastSeen = lastSeenRaw is num ? lastSeenRaw.toInt() : 0;
               
               final bool isFresh = lastSeen > 0 && (now - lastSeen).abs() < 120000;
-              final bool genuinelyOnline = isOnline && (lastSeen == 0 || isFresh || (now - lastSeen).abs() < 300000);
+              final bool genuinelyOnline = isOnline &&
+                  userStatus != 'OFFLINE' &&
+                  userStatus != 'COMPLETED' &&
+                  userStatus != 'FINISHED' &&
+                  (lastSeen == 0 || isFresh || (now - lastSeen).abs() < 300000);
 
-              debugPrint("[DRIVER_PRESENCE_CHECK] uid: $driverUid | name: $driverName | isOnline: $isOnline | lastSeen: $lastSeen | ageSec: ${(now - lastSeen)/1000} | genuinelyOnline: $genuinelyOnline");
+              debugPrint("[DRIVER_PRESENCE_CHECK] uid: $driverUid | name: $driverName | isOnline: $isOnline | status: $userStatus | genuinelyOnline: $genuinelyOnline");
 
               if (genuinelyOnline) {
                 onlineCount++;
+                genuinelyOnlineDriverIds.add(driverUid);
+                if (driverName.isNotEmpty) genuinelyOnlineDriverNamesUpper.add(driverName.toUpperCase());
               }
             }
           }
@@ -361,6 +395,18 @@ class _AdminDashboardState extends State<AdminDashboard> with TickerProviderStat
         if (mounted) {
           setState(() {
             _onlineDriversCount = onlineCount;
+            _archivedDriverIds.clear();
+            _archivedDriverIds.addAll(archivedIds);
+            _archivedDriverNames.clear();
+            _archivedDriverNames.addAll(archivedNames);
+            _validDriverIds.clear();
+            _validDriverIds.addAll(validDriverIds);
+            _validDriverNames.clear();
+            _validDriverNames.addAll(validDriverNames);
+            _genuinelyOnlineDriverIds.clear();
+            _genuinelyOnlineDriverIds.addAll(genuinelyOnlineDriverIds);
+            _genuinelyOnlineDriverNamesUpper.clear();
+            _genuinelyOnlineDriverNamesUpper.addAll(genuinelyOnlineDriverNamesUpper);
           });
         }
       } else {
@@ -390,25 +436,71 @@ class _AdminDashboardState extends State<AdminDashboard> with TickerProviderStat
             final truckMap = Map<dynamic, dynamic>.from(value as Map);
             final String nodeKey = key.toString();
             final String tid = (truckMap['truck_id'] ?? nodeKey).toString().toUpperCase();
-            final String? dId = truckMap['driver_id']?.toString();
-            final String dName = (truckMap['driver_name'] ?? 'Driver').toString();
-            final String status = (truckMap['status'] ?? 'OFFLINE').toString().toUpperCase();
-            final bool isOnlineField = truckMap['isOnline'] == true;
-            final dynamic lastSeenRaw = truckMap['lastSeen'];
-            final int lastSeen = lastSeenRaw is num ? lastSeenRaw.toInt() : 0;
-            
-            // 2-minute freshness window
-            final bool isFresh = lastSeen > 0 && (now - lastSeen).abs() < 120000;
-            
-            bool isGenuinelyOnline = isOnlineField && status != 'OFFLINE' && dId != null && isFresh;
-            
-            String rejectReason = "";
-            if (!isOnlineField) rejectReason += "isOnline FALSE; ";
-            if (status == 'OFFLINE') rejectReason += "status OFFLINE; ";
-            if (dId == null) rejectReason += "driver_id NULL; ";
-            if (!isFresh) rejectReason += "STALE_LAST_SEEN (${now - lastSeen}ms); ";
+            final String? dId = truckMap['driver_id']?.toString() ?? truckMap['driverId']?.toString();
+            final String dName = (truckMap['driver_name'] ?? truckMap['driverName'] ?? 'Driver').toString().trim();
+            final String dNameUpper = dName.toUpperCase();
+            final String driverKey = (dId != null && dId.isNotEmpty && dId != 'null') ? dId : dNameUpper;
 
-            debugPrint("[ACTIVE_FLEET_CHECK] truckId: $tid | driverId: $dId | driverName: $dName | isOnline: $isOnlineField | lastSeen: $lastSeen | ageSeconds: ${(now - lastSeen) / 1000} | isFresh: $isFresh | included: $isGenuinelyOnline | reason: ${rejectReason.isEmpty ? 'NONE' : rejectReason}");
+            final String role = (truckMap['role'] ?? '').toString().toLowerCase();
+            final bool isExplicitNonDriver = (role == 'resident' || role == 'admin' || role == 'administrator');
+
+            final String accountStatus = (truckMap['account_status'] ?? truckMap['status'] ?? '').toString().toLowerCase();
+            final dynamic isArchivedRaw = truckMap['is_archived'] ?? truckMap['isArchived'];
+            final bool isNodeArchived = accountStatus == 'archived' ||
+                isArchivedRaw == 1 ||
+                isArchivedRaw == '1' ||
+                isArchivedRaw == true ||
+                isArchivedRaw == 'true';
+
+            // Verify driver_id or driver_name belongs to a valid driver with role == 'driver'
+            final bool isDriverIdValid = dId == null || dId.isEmpty || dId == 'null' || _validDriverIds.isEmpty || _validDriverIds.contains(dId);
+            final bool isDriverNameValid = _validDriverNames.isEmpty || _validDriverNames.contains(dNameUpper);
+
+            if (isExplicitNonDriver ||
+                isNodeArchived ||
+                !isDriverIdValid ||
+                !isDriverNameValid ||
+                (dId != null && _archivedDriverIds.contains(dId)) ||
+                _archivedDriverNames.contains(dNameUpper) ||
+                tid.contains("ADMIN") ||
+                tid.contains("SYSTEM") ||
+                tid.contains("USER")) {
+              return; // REJECT NON-DRIVERS, RESIDENTS, ADMINS, AND ARCHIVED ACCOUNTS!
+            }
+
+            final String status = (truckMap['status'] ?? 'OFFLINE').toString().toUpperCase();
+            final bool isOnlineField = truckMap['isOnline'] == true || truckMap['is_online'] == true || truckMap['is_online'] == 1;
+            final dynamic lastSeenRaw = truckMap['lastSeen'] ?? truckMap['last_seen'];
+            int lastSeen = 0;
+            if (lastSeenRaw is num) {
+              lastSeen = lastSeenRaw.toInt();
+            } else if (lastSeenRaw != null) {
+              final parsed = DateTime.tryParse(lastSeenRaw.toString().replaceAll(' ', 'T'));
+              if (parsed != null) lastSeen = parsed.millisecondsSinceEpoch;
+            }
+
+            final dynamic loginTimeRaw = truckMap['login_time'] ?? truckMap['loginTime'];
+            int loginTime = 0;
+            if (loginTimeRaw is num) {
+              loginTime = loginTimeRaw.toInt();
+            }
+
+            // Session Limit: 12 Hours (43,200,000 ms) since login
+            final bool isSessionValid = loginTime == 0 || (now - loginTime) < 43200000;
+            final bool isFresh = lastSeen == 0 || (now - lastSeen).abs() < 180000; // 3-minute freshness check
+
+            final bool isUserAccountOnline = (dId != null && _genuinelyOnlineDriverIds.contains(dId)) ||
+                _genuinelyOnlineDriverNamesUpper.contains(dNameUpper);
+
+            // Driver stays visible during ACTIVE, COLLECTING, IDLE, PAUSED, FULL while logged in
+            // Excluded from Active Collection Fleet once trip is COMPLETED / FINISHED or OFFLINE or LOGGED OUT
+            bool isGenuinelyOnline = isOnlineField &&
+                status != 'OFFLINE' &&
+                status != 'COMPLETED' &&
+                status != 'FINISHED' &&
+                isSessionValid &&
+                isFresh &&
+                isUserAccountOnline;
 
             if (isGenuinelyOnline) {
               final resolved = TruckAssignmentService.resolveFleetNode(
@@ -424,13 +516,13 @@ class _AdminDashboardState extends State<AdminDashboard> with TickerProviderStat
               truckMap['driver_name'] = resolved.driverName;
               truckMap['isOnline'] = true;
 
-              if (!driverToLatestTruck.containsKey(dId)) {
-                driverToLatestTruck[dId] = truckMap;
+              if (!driverToLatestTruck.containsKey(driverKey)) {
+                driverToLatestTruck[driverKey] = truckMap;
               } else {
-                final existing = driverToLatestTruck[dId]!;
+                final existing = driverToLatestTruck[driverKey]!;
                 final int existingSeen = (existing['lastSeen'] ?? 0) as int;
-                if (lastSeen > existingSeen) {
-                  driverToLatestTruck[dId] = truckMap;
+                if (lastSeen >= existingSeen) {
+                  driverToLatestTruck[driverKey] = truckMap;
                 }
               }
             }
@@ -454,6 +546,7 @@ class _AdminDashboardState extends State<AdminDashboard> with TickerProviderStat
         if (mounted) {
           setState(() {
             _activeTrucks = onlineTrucks.length;
+            _onlineDriversCount = onlineTrucks.length;
             _fleetStatus = onlineTrucks;
             _averageSpeed = activeWithSpeed > 0 ? totalSpeed / activeWithSpeed : 0.0;
           });
@@ -2618,33 +2711,226 @@ class _AdminDashboardState extends State<AdminDashboard> with TickerProviderStat
   }
 
   Widget _buildModernFleetItem(Map<dynamic, dynamic> truck) {
-    final bool isMobile = MediaQuery.of(context).size.width < 600;
-    final String id = (truck['truckNumber'] ?? truck['truck_id'] ?? truck['truckId'] ?? truck['internal_id'] ?? "Unknown").toString();
-    final String status = (truck['status'] ?? "Idle").toString().toUpperCase();
-    
-    final String plate = (truck['plate_number'] != null && truck['plate_number'].toString().isNotEmpty && truck['plate_number'] != "N/A") 
-        ? truck['plate_number'].toString() 
-        : (_truckPlates[id.toUpperCase()] ?? truck['plateNumber']?.toString() ?? "");
+    return _buildOrganizedTruckCard(truck);
+  }
+  Color _getFleetStatusColor(String status) {
+    switch (status.toUpperCase()) {
+      case 'IDLE':
+        return const Color(0xFFED6C02);
+      case 'ACTIVE':
+      case 'COLLECTING':
+      case 'MOVING':
+      case 'EN_ROUTE':
+      case 'IN_PROGRESS':
+        return const Color(0xFF00796B);
+      case 'FULL':
+      case 'TRUCK_FULL':
+      case 'CAPACITY_FULL':
+        return const Color(0xFF0288D1);
+      case 'PAUSED':
+      case 'INTERRUPTED':
+      case 'ON_HOLD':
+      case 'STOPPED':
+        return const Color(0xFFD84315);
+      case 'COMPLETED':
+      case 'FINISHED':
+        return const Color(0xFF2E7D32);
+      case 'MAINTENANCE':
+      case 'ISSUE':
+      case 'BREAKDOWN':
+        return const Color(0xFFC62828);
+      case 'DELAYED':
+        return const Color(0xFFF57F17);
+      case 'OFFLINE':
+      default:
+        return const Color(0xFF616161);
+    }
+  }
 
-    final Color statusColor = status == 'ACTIVE' ? const Color(0xFF4CAF50) : const Color(0xFFFFAB00);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: EdgeInsets.symmetric(horizontal: isMobile ? 12 : 14, vertical: isMobile ? 8 : 10),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200, width: 1),
-      ),
-      child: Row(children: [
-        Container(padding: const EdgeInsets.all(6), decoration: BoxDecoration(color: statusColor.withAlpha(20), borderRadius: BorderRadius.circular(8)), child: Icon(Icons.local_shipping_rounded, color: statusColor, size: 18)),
-        const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(id, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 14, color: Color(0xFF1A1A1A))), 
-          Text("$status | $plate", style: TextStyle(color: statusColor, fontSize: 10.5, fontWeight: FontWeight.w800))
+  Color _getFleetStatusBgColor(String status) {
+    switch (status.toUpperCase()) {
+      case 'IDLE':
+        return const Color(0xFFFFF3E0);
+      case 'ACTIVE':
+      case 'COLLECTING':
+      case 'MOVING':
+      case 'EN_ROUTE':
+      case 'IN_PROGRESS':
+        return const Color(0xFFE0F2F1);
+      case 'FULL':
+      case 'TRUCK_FULL':
+      case 'CAPACITY_FULL':
+        return const Color(0xFFE1F5FE);
+      case 'PAUSED':
+      case 'INTERRUPTED':
+      case 'ON_HOLD':
+      case 'STOPPED':
+        return const Color(0xFFFBE9E7);
+      case 'COMPLETED':
+      case 'FINISHED':
+        return const Color(0xFFE8F5E9);
+      case 'MAINTENANCE':
+      case 'ISSUE':
+      case 'BREAKDOWN':
+        return const Color(0xFFFFEBEE);
+      case 'DELAYED':
+        return const Color(0xFFFFF8E1);
+      case 'OFFLINE':
+      default:
+        return const Color(0xFFF5F5F5);
+    }
+  }
+
+  Widget _buildOrganizedTruckCard(Map<dynamic, dynamic> truck) {
+    final String tid = (truck['truckNumber'] ?? truck['truck_id'] ?? truck['truckId'] ?? 'GT-007').toString();
+    final String license = (truck['plate_number'] ?? truck['plateNumber'] ?? truck['license_number'] ?? '').toString();
+    final String driver = (truck['driver_name'] ?? truck['driverName'] ?? 'Driver').toString();
+    final String status = (truck['status'] ?? 'IDLE').toString().toUpperCase();
+    final bool isActive = status == 'ACTIVE' || status == 'COLLECTING';
+    final Color statusColor = _getFleetStatusColor(status);
+    final Color statusBgColor = _getFleetStatusBgColor(status);
+
+    final double speed = (truck['speed'] ?? 0.0).toDouble();
+    final double dist = (truck['total_distance'] ?? truck['total_distance_km'] ?? truck['distance'] ?? 0.0).toDouble();
+    final double fuel = double.tryParse((truck['fuel'] ?? truck['fuel_level'] ?? 0.0).toString()) ?? 0.0;
+    final int stops = int.tryParse((truck['detected_stops_count'] ?? truck['stops_count'] ?? truck['total_stops'] ?? 0).toString()) ?? 0;
+    final String area = (truck['current_purok'] ?? truck['location'] ?? truck['area'] ?? truck['purok'] ?? "Balintawak").toString();
+
+    final double etaMins = PredictionEngine.estimateArrivalTime(dist > 0 ? dist : 2.5, [speed > 5 ? speed : 15.0]);
+    final String eta = isActive ? "${etaMins.toStringAsFixed(0)} mins" : "--";
+    String lastUpdate = truck['updatedAt'] != null || truck['lastSeen'] != null ? "just now" : "Offline";
+
+    return _HoverZoomCard(
+      onTap: () {
+        if (Navigator.canPop(context)) {
+          Navigator.pop(context);
+        }
+        setState(() => _selectedIndex = 1);
+      },
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 300),
+        margin: const EdgeInsets.only(bottom: 16),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(28),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.08),
+                blurRadius: 15,
+                offset: const Offset(0, 4),
+              ),
+            ],
+            border: Border.all(
+              color: Colors.grey.shade200,
+              width: 1
+            )),
+        child: Column(children: [
+          // Top Row: Icon, Driver Name, Truck ID / License, Status
+          Row(children: [
+            Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                    color: const Color(0xFFE3F2FD),
+                    borderRadius: BorderRadius.circular(16)),
+                child: const Icon(
+                  Icons.local_shipping_rounded,
+                  color: Color(0xFF2196F3),
+                  size: 26
+                )),
+            const SizedBox(width: 14),
+            Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(driver,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.w900, fontSize: 16, color: Color(0xFF1A1A1A))),
+              Text("$tid | $license",
+                  style: const TextStyle(
+                      color: Colors.grey, fontSize: 11.5, fontWeight: FontWeight.w600))
+            ])),
+            Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                    color: statusBgColor,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: statusColor.withOpacity(0.3))),
+                child: Text(status,
+                    style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.w900))),
+          ]),
+
+          const SizedBox(height: 18),
+
+          // Middle Info: Location, Speed, Driver
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            _buildFleetMetricsInfo(Icons.location_on_rounded, Colors.redAccent, "Location", area),
+            _buildFleetMetricsInfo(Icons.speed_rounded, Colors.blueAccent, "Speed", "${speed.toStringAsFixed(0)} km/h"),
+            _buildFleetMetricsInfo(Icons.person_rounded, Colors.indigoAccent, "Driver", driver),
+          ]),
+
+          const SizedBox(height: 16),
+
+          // Metrics Pill Row
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+            decoration: BoxDecoration(
+                color: const Color(0xFFF8F9FA),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.grey.shade100)),
+            child: Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+              _buildFleetPillMetric(Icons.straighten_rounded, Colors.green, "DISTANCE", "${dist.toStringAsFixed(1)} km"),
+              Container(width: 1, height: 18, color: Colors.grey.shade300),
+              _buildFleetPillMetric(Icons.local_gas_station_rounded, Colors.orange, "FUEL", "${fuel.toStringAsFixed(1)} L"),
+              Container(width: 1, height: 18, color: Colors.grey.shade300),
+              _buildFleetPillMetric(Icons.pause_circle_filled_rounded, Colors.red, "STOPS", "$stops"),
+            ]),
+          ),
+
+          const SizedBox(height: 16),
+
+          // Footer
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            _buildFleetFooterInfo(Icons.access_time_rounded, "Last Update: $lastUpdate"),
+            _buildFleetFooterInfo(null, "Start: --:--"),
+            _buildFleetFooterInfo(null, "ETA: $eta", isTeal: true),
+          ]),
         ])),
-        const Icon(Icons.chevron_right_rounded, color: Colors.grey, size: 16),
-      ]),
     );
+  }
+
+  Widget _buildFleetMetricsInfo(IconData icon, Color color, String label, String value) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Icon(icon, size: 12, color: color),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.w700)),
+      ]),
+      const SizedBox(height: 4),
+      Text(value, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 12.5, color: Color(0xFF1A1A1A))),
+    ]);
+  }
+
+  Widget _buildFleetPillMetric(IconData icon, Color color, String label, String value) {
+    return Column(children: [
+      Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 10, color: color),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 8, color: Colors.grey, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+      ]),
+      const SizedBox(height: 2),
+      Text(value, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 11.5, color: Color(0xFF2196F3))),
+    ]);
+  }
+
+  Widget _buildFleetFooterInfo(IconData? icon, String text, {bool isTeal = false}) {
+    return Row(children: [
+      if (icon != null) ...[Icon(icon, size: 12, color: Colors.grey), const SizedBox(width: 4)],
+      Text(text, style: TextStyle(
+        fontSize: 10,
+        color: isTeal ? const Color(0xFF00796B) : Colors.grey,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 0.2
+      )),
+    ]);
   }
 
   Widget _buildSummarySection() {

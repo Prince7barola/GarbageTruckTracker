@@ -18,9 +18,20 @@ class SessionManager {
   static const String keyLastUserId = "last_user_id";
   static const String keyLastUserPurok = "last_user_purok";
   static const String keyNotifPermissionRequested = "notif_permission_requested";
+  static const String keyLoginTimestamp = "login_timestamp";
+
+  static Future<void> saveLoginTimestamp(int timestamp) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(keyLoginTimestamp, timestamp);
+  }
 
   static Future<void> saveUser(Map<String, dynamic> userMap, {bool rememberMe = true}) async {
     final prefs = await SharedPreferences.getInstance();
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    if (userMap['login_time'] == null && userMap['loginTime'] == null) {
+      userMap['login_time'] = now;
+    }
+    await prefs.setInt(keyLoginTimestamp, (userMap['login_time'] ?? userMap['loginTime'] ?? now) as int);
     await prefs.setString(keyUserData, jsonEncode(userMap));
     await prefs.setBool(keyIsLoggedIn, true);
     await prefs.setBool(keyRememberMe, rememberMe);
@@ -138,9 +149,15 @@ class SessionManager {
     return prefs.getBool(keyIsLoggedIn) ?? false;
   }
 
+  static Future<int?> getLoginTimestamp() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(keyLoginTimestamp);
+  }
+
   static Future<void> logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(keyUserData);
+    await prefs.remove(keyLoginTimestamp);
     await prefs.setBool(keyIsLoggedIn, false);
     debugPrint("[AUTH DEBUG] Logout executed. Active session cleared.");
   }

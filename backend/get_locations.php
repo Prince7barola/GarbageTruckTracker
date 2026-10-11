@@ -15,7 +15,7 @@ try {
                 tl.updated_at,
                 u.id as driver_id,
                 u.plate_number,
-                COALESCE(u.name, tl.driver_name, 'Driver') as driver_name,
+                COALESCE(NULLIF(tl.driver_name, ''), u.name, 'Driver') as driver_name,
                 TIMESTAMPDIFF(SECOND, tl.updated_at, NOW()) as seconds_ago,
                 IF(TIMESTAMPDIFF(SECOND, tl.updated_at, NOW()) <= 60 AND LOWER(tl.status) != 'offline', 1, 0) as is_online
               FROM truck_locations tl

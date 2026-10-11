@@ -51,7 +51,6 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
   bool _isLoading = false;
   bool _obs1 = true;
   bool _obs2 = true;
-  bool _termsAccepted = false;
   final Map<String, Timer?> _errorTimers = {};
 
   final List<String> _puroks = ServiceAreaService.documentedAreaNames;
@@ -413,7 +412,6 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
     );
 
     if (accepted == true && mounted) {
-      setState(() => _termsAccepted = true);
       CustomSnackBar.show(
         context,
         message: successMsg ?? "Registration successful. You can now log in.",
@@ -572,8 +570,6 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
                                         _buildInput(_addressController, AppLocalizations.get('complete_address'), AppLocalizations.get('complete_address'), maxLines: 3, action: TextInputAction.done, icon: Icons.home_outlined, error: _addressError),
 
                                         const SizedBox(height: 32),
-                                        _buildTermsCheckbox(),
-                                        const SizedBox(height: 32),
                                         HoverActionButton(
                                           text: AppLocalizations.get('submit_registration'),
                                           loadingText: AppLocalizations.get('processing_registration'),
@@ -683,48 +679,6 @@ class _ResidentRegisterScreenState extends State<ResidentRegisterScreen> {
         const SizedBox(height: 16),
         Text(AppLocalizations.get('brgy_footer'), style: ResponsiveText.footer(context, bold: true)),
         Text(AppLocalizations.get('all_rights_reserved'), style: ResponsiveText.footer(context, size: 10)),
-      ],
-    );
-  }
-
-  Widget _buildTermsCheckbox() {
-    return Row(
-      children: [
-        SizedBox(
-          height: 24, width: 24,
-          child: Checkbox(
-            value: _termsAccepted,
-            onChanged: (v) => setState(() => _termsAccepted = v ?? false),
-            activeColor: AppColors.tealText,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Wrap(
-            children: [
-              Text(AppLocalizations.get('agree_terms'), style: ResponsiveText.body(context)),
-              const SizedBox(width: 4),
-              _HoverZoomLink(
-                onTap: () {
-                  _clearAllErrors();
-                  LegalAgreementDialog.show(context, isTerms: true);
-                },
-                child: Text(AppLocalizations.get('terms_conditions'), style: ResponsiveText.link(context).copyWith(decoration: TextDecoration.underline)),
-              ),
-              const SizedBox(width: 4),
-              Text(AppLocalizations.get('and'), style: ResponsiveText.body(context)),
-              const SizedBox(width: 4),
-              _HoverZoomLink(
-                onTap: () {
-                  _clearAllErrors();
-                  LegalAgreementDialog.show(context, isTerms: false);
-                },
-                child: Text(AppLocalizations.get('privacy_policy'), style: ResponsiveText.link(context).copyWith(decoration: TextDecoration.underline)),
-              ),
-            ],
-          ),
-        ),
       ],
     );
   }

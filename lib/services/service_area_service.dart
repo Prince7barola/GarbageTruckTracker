@@ -404,10 +404,13 @@ class ServiceAreaService {
     return null;
   }
 
-  /// Ensures that 'puroks' in Firebase RTDB is updated with the latest authoritative Balintawak service areas
+  /// Ensures that 'puroks' in Firebase RTDB is seeded ONLY if empty
   Future<void> ensureInitialized() async {
     try {
-      await resetToDefaultBalintawakAreas();
+      final snap = await _database.ref('puroks').get();
+      if (!snap.exists || snap.value == null) {
+        await resetToDefaultBalintawakAreas();
+      }
     } catch (e) {
       debugPrint("[SERVICE AREA] Error ensuring service area initialization: $e");
     }
@@ -423,7 +426,7 @@ class ServiceAreaService {
     debugPrint("[SERVICE AREA] Database 'puroks' initialized with ${defaultServiceAreas.length} documented Barangay Balintawak areas.");
   }
 
-  /// Retrieves all service areas from Firebase RTDB
+  /// Retrieves all service areas from Firebase RTDB without overwriting admin coordinates
   Future<List<ServiceArea>> getAllServiceAreas() async {
     await ensureInitialized();
     try {
@@ -431,9 +434,6 @@ class ServiceAreaService {
       if (snap.exists && snap.value != null) {
         final Map data = snap.value as Map;
         final List<ServiceArea> list = [];
-        final Map<String, ServiceArea> defaultMap = {
-          for (var d in defaultServiceAreas) d.id: d
-        };
 
         data.forEach((key, value) {
           if (value is Map) {
@@ -441,30 +441,6 @@ class ServiceAreaService {
             if (!areaMap.containsKey('id') || areaMap['id'] == null || areaMap['id'].toString().isEmpty) {
               areaMap['id'] = key.toString();
             }
-
-            final String areaId = areaMap['id'].toString();
-            if (defaultMap.containsKey(areaId)) {
-              final def = defaultMap[areaId]!;
-              if (def.latitude != 0.0) {
-                areaMap['latitude'] = def.latitude;
-                areaMap['lat'] = def.latitude;
-              }
-              if (def.longitude != 0.0) {
-                areaMap['longitude'] = def.longitude;
-                areaMap['lng'] = def.longitude;
-              }
-              if (def.entranceLat != 0.0) areaMap['entranceLat'] = def.entranceLat;
-              if (def.entranceLng != 0.0) areaMap['entranceLng'] = def.entranceLng;
-              if (def.endLat != null) areaMap['endLat'] = def.endLat;
-              if (def.endLng != null) areaMap['endLng'] = def.endLng;
-              if ((areaMap['boundaryGeometry'] == null || (areaMap['boundaryGeometry'] as List).isEmpty) && def.boundaryGeometry.isNotEmpty) {
-                areaMap['boundaryGeometry'] = def.boundaryGeometry;
-              }
-              if ((areaMap['color'] == null || areaMap['color'].toString().isEmpty) && def.color.isNotEmpty) {
-                areaMap['color'] = def.color;
-              }
-            }
-
             list.add(ServiceArea.fromJson(areaMap));
           }
         });

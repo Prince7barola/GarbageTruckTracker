@@ -9,13 +9,22 @@ if (!$data || empty($data->trip_id)) {
     exit;
 }
 
+// 1. ISOLATE MANUAL SIMULATION WRITES
+if (!empty($data->is_simulation) || !empty($data->isSimulation)) {
+    echo json_encode([
+        "success" => true,
+        "message" => "Simulation record isolated; skipped writing to production historical dataset."
+    ]);
+    exit;
+}
+
 try {
     $trip_id = $data->trip_id;
     $driver_id = isset($data->driver_id) ? intval($data->driver_id) : 0;
     $driver_name = $data->driver_name ?? "Driver";
-    $truck_id = $data->truck_id ?? "Unknown";
+    $truck_id = $data->truck_id ?? "Truck not recorded";
     $route_name = $data->route_name ?? "Collection Route";
-    $route_status = $data->route_status ?? "ACTIVE";
+    $route_status = strtoupper($data->route_status ?? "ACTIVE");
     $start_time = isset($data->start_time) ? date("Y-m-d H:i:s", strtotime($data->start_time)) : date("Y-m-d H:i:s");
     $end_time = isset($data->end_time) ? date("Y-m-d H:i:s", strtotime($data->end_time)) : null;
     $start_lat = isset($data->start_lat) ? floatval($data->start_lat) : null;
@@ -67,7 +76,7 @@ try {
                 foreach ($data->route_points as $pt) {
                     $lat = floatval($pt->latitude ?? $pt->lat ?? 0);
                     $lng = floatval($pt->longitude ?? $pt->lng ?? 0);
-                    if ($lat == 0 && $lng == 0) continue; // Skip invalid coordinates
+                    if ($lat == 0 && $lng == 0) continue;
                     $spd = floatval($pt->speed_kmh ?? $pt->speed ?? 0);
                     $hdg = floatval($pt->heading ?? 0);
                     $acc = floatval($pt->accuracy_m ?? $pt->accuracy ?? 0);
@@ -96,6 +105,41 @@ try {
 
                     $evtStmt->execute([$trip_id, $driver_id, $eType, $desc, $eLat, $eLng, $eRecAt]);
                 }
+            }
+        }
+
+        // 2. BACKEND RETENTION AUTHORITY (Max 200 Finalized Real Movement Trips per Manila Calendar Month)
+        if (in_array($route_status, ['COMPLETED', 'FINISHED', 'INTERRUPTED'])) {
+            $conn->query("SELECT GET_LOCK('driver_trip_retention_lock', 10)");
+            try {
+                $monthKey = date("Y-m", strtotime($start_time));
+                $purgeStmt = $conn->prepare("
+                    SELECT trip_id FROM driver_trip_history
+                    WHERE DATE_FORMAT(start_time, '%Y-%m') = ?
+                      AND UPPER(route_status) IN ('COMPLETED', 'FINISHED', 'INTERRUPTED')
+                      AND total_distance_km >= 0.015
+                    ORDER BY start_time DESC, trip_id DESC
+                    LIMIT 18446744073709551615 OFFSET 200
+                ");
+                $purgeStmt->execute([$monthKey]);
+                $oldTripsToPurge = $purgeStmt->fetchAll(PDO::FETCH_COLUMN);
+
+                if (!empty($oldTripsToPurge)) {
+                    $inClause = implode(',', array_fill(0, count($oldTripsToPurge), '?'));
+
+                    // Purge exclusively owned points & events
+                    $delPoints = $conn->prepare("DELETE FROM driver_trip_gps_points WHERE trip_id IN ($inClause)");
+                    $delPoints->execute($oldTripsToPurge);
+
+                    $delEvents = $conn->prepare("DELETE FROM driver_trip_events WHERE trip_id IN ($inClause)");
+                    $delEvents->execute($oldTripsToPurge);
+
+                    // Purge finalized trips exceeding 200 limit
+                    $delHistory = $conn->prepare("DELETE FROM driver_trip_history WHERE trip_id IN ($inClause)");
+                    $delHistory->execute($oldTripsToPurge);
+                }
+            } finally {
+                $conn->query("SELECT RELEASE_LOCK('driver_trip_retention_lock')");
             }
         }
     }

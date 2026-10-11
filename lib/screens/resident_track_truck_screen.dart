@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -42,6 +43,9 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
 
   String? _followedTruckId;
   Timer? _phpSyncTimer;
+  StreamSubscription? _usersSubscription;
+  final Set<String> _validDriverIds = {};
+  final Set<String> _validDriverNames = {};
   final ApiService _apiService = ApiService();
 
   bool _isUpdatingMarkers = false;
@@ -67,6 +71,7 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
   void initState() {
     super.initState();
     _loadUser();
+    _listenToUsers();
     _listenToTrucks();
     _getResidentLocation();
     _syncPhpLocations();
@@ -102,9 +107,12 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
         final Map<String, dynamic> phpMap = {};
         for (var loc in phpLocations) {
           final String driverName = (loc['driver_name'] ?? loc['driverName'] ?? '').toString();
-          if (driverName.toLowerCase().contains("john driver")) continue;
 
           final String tid = (loc['truck_id'] ?? loc['truckId'] ?? '').toString().toUpperCase();
+          final String status = (loc['status'] ?? 'ACTIVE').toString().toUpperCase();
+          final bool isPhpOnline = status != 'OFFLINE' &&
+              (loc['is_online'] == true || loc['isOnline'] == true || loc['is_online'] == 1 || loc['is_online'] == null);
+
           if (tid.isNotEmpty) {
             phpMap[tid] = {
               'truck_id': tid,
@@ -112,8 +120,8 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
               'latitude': double.tryParse(loc['latitude']?.toString() ?? '0') ?? 0.0,
               'longitude': double.tryParse(loc['longitude']?.toString() ?? '0') ?? 0.0,
               'speed': double.tryParse(loc['speed']?.toString() ?? '0') ?? 0.0,
-              'status': (loc['status'] ?? 'ACTIVE').toString().toUpperCase(),
-              'isOnline': true,
+              'status': status,
+              'isOnline': isPhpOnline,
               'lastSeen': DateTime.now().millisecondsSinceEpoch,
             };
           }
@@ -251,11 +259,98 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
   @override
   void dispose() {
     _routeSubscriptions.forEach((key, sub) => sub.cancel());
+    _usersSubscription?.cancel();
     _phpSyncTimer?.cancel();
     _circleController.dispose();
     _refreshRotationController.dispose();
     _pulseTimer?.cancel();
     super.dispose();
+  }
+
+  void _listenToUsers() {
+    _usersSubscription?.cancel();
+    _usersSubscription = _database.ref('users').onValue.listen((event) {
+      if (event.snapshot.exists && event.snapshot.value != null) {
+        final Map data = event.snapshot.value as Map;
+        final Set<String> validDriverIds = {};
+        final Set<String> validDriverNames = {};
+
+        data.forEach((key, value) {
+          if (value is Map) {
+            final String role = (value['role'] ?? '').toString().toLowerCase();
+            final String uId = key.toString();
+            final String rawName = (value['name'] ?? value['username'] ?? '').toString();
+            final String name = rawName.toUpperCase();
+            final String status = (value['account_status'] ?? '').toString().toLowerCase();
+            final dynamic isArchivedRaw = value['is_archived'] ?? value['isArchived'];
+            final bool isArchived = status == 'archived' ||
+                isArchivedRaw == 1 ||
+                isArchivedRaw == '1' ||
+                isArchivedRaw == true ||
+                isArchivedRaw == 'true';
+
+            if (!isArchived && role == 'driver') {
+              validDriverIds.add(uId);
+              if (name.isNotEmpty) validDriverNames.add(name);
+            }
+          }
+        });
+
+        if (mounted) {
+          setState(() {
+            _validDriverIds.clear();
+            _validDriverIds.addAll(validDriverIds);
+            _validDriverNames.clear();
+            _validDriverNames.addAll(validDriverNames);
+          });
+          _processMergedTrucks();
+        }
+      }
+    });
+
+    _fetchTotalDriversFromUserManagement();
+  }
+
+  Future<void> _fetchTotalDriversFromUserManagement() async {
+    try {
+      final response = await ApiService().getUsers();
+      if (response.data != null && response.data['success'] == true) {
+        final List users = response.data['users'] ?? [];
+        final List residents = response.data['residents'] ?? [];
+        final allList = [...users, ...residents];
+
+        final Set<String> driverIds = {};
+        final Set<String> driverNames = {};
+
+        for (var user in allList) {
+          if (user is Map) {
+            final String uId = (user['user_id'] ?? user['id'] ?? '').toString();
+            final String role = (user['role'] ?? '').toString().toLowerCase().trim();
+            final String name = (user['name'] ?? user['username'] ?? '').toString().trim().toUpperCase();
+            final String status = (user['account_status'] ?? user['status'] ?? '').toString().toLowerCase();
+            final dynamic isArchivedRaw = user['is_archived'] ?? user['isArchived'];
+            final bool isArchived = status == 'archived' ||
+                isArchivedRaw == 1 ||
+                isArchivedRaw == '1' ||
+                isArchivedRaw == true ||
+                isArchivedRaw == 'true';
+
+            if (role == 'driver' && !isArchived) {
+              if (uId.isNotEmpty) driverIds.add(uId);
+              if (name.isNotEmpty) driverNames.add(name);
+            }
+          }
+        }
+        if (mounted && driverIds.isNotEmpty) {
+          setState(() {
+            _validDriverIds.addAll(driverIds);
+            _validDriverNames.addAll(driverNames);
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching driver count from User Management API: $e");
+    }
   }
 
   void _loadUser() async {
@@ -327,8 +422,8 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
       final dynamic lastSeenRaw = liveData['lastSeen'];
       final int lastSeen = lastSeenRaw is num ? lastSeenRaw.toInt() : 0;
       final int now = DateTime.now().millisecondsSinceEpoch;
-      final bool isFresh = lastSeen == 0 || (now - lastSeen).abs() < 180000;
-      final bool isGenuinelyOnline = hasValidCoords && status != 'OFFLINE' && isOnlineField && isFresh;
+      final bool isFresh = lastSeen == 0 || (now - lastSeen).abs() < 900000;
+      final bool isGenuinelyOnline = hasValidCoords && status != 'OFFLINE' && status != 'COMPLETED' && status != 'FINISHED' && isOnlineField && isFresh;
 
       final resolved = TruckAssignmentService.resolveFleetNode(
         nodeKey: key.toString(),
@@ -337,7 +432,18 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
       );
 
       final String driverNameLower = (resolved.driverName ?? liveData['driver_name'] ?? '').toString().toLowerCase();
-      if (driverNameLower.contains("john driver")) return;
+      final String accountStatus = (liveData['account_status'] ?? '').toString().toLowerCase();
+      final dynamic isArchivedRaw = liveData['is_archived'] ?? liveData['isArchived'];
+      final bool isArchived = accountStatus == 'archived' ||
+          isArchivedRaw == 1 ||
+          isArchivedRaw == '1' ||
+          isArchivedRaw == true ||
+          isArchivedRaw == 'true';
+
+      if (isArchived ||
+          driverNameLower.contains("arian joy") ||
+          driverNameLower.contains("john driver") ||
+          driverNameLower.contains("system admin")) return;
 
       mergedList.add({
         ...Map<String, dynamic>.from(_allTrucksRegistry[tid] as Map? ?? _allTrucksRegistry[key] as Map? ?? {}),
@@ -1252,6 +1358,8 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
         : (floatingHeaderBottom + (isMobile ? 8.0 : 12.0));
     final double leftOffset = isMobile ? 16.0 : (isTablet ? 20.0 : 24.0);
 
+    final int totalFleetUnits = math.max(_validDriverIds.length, _allTrucksRegistry.length);
+
     return Positioned(
       top: topOffset,
       left: leftOffset,
@@ -1266,7 +1374,7 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            _buildHUDSeparator("TOTAL UNITS", "${_trucks.length}"),
+            _buildHUDSeparator("TOTAL UNITS", "$totalFleetUnits"),
             const SizedBox(width: 12),
             Container(width: 1.5, height: 16, color: Colors.grey.shade300),
             const SizedBox(width: 12),
@@ -1414,24 +1522,90 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
     );
   }
 
+  Color _getFleetStatusColor(String status) {
+    switch (status.toUpperCase()) {
+      case 'IDLE':
+        return const Color(0xFFED6C02);
+      case 'ACTIVE':
+      case 'COLLECTING':
+      case 'MOVING':
+      case 'EN_ROUTE':
+      case 'IN_PROGRESS':
+        return const Color(0xFF00796B);
+      case 'FULL':
+      case 'TRUCK_FULL':
+      case 'CAPACITY_FULL':
+        return const Color(0xFF0288D1);
+      case 'PAUSED':
+      case 'INTERRUPTED':
+      case 'ON_HOLD':
+      case 'STOPPED':
+        return const Color(0xFFD84315);
+      case 'COMPLETED':
+      case 'FINISHED':
+        return const Color(0xFF2E7D32);
+      case 'MAINTENANCE':
+      case 'ISSUE':
+      case 'BREAKDOWN':
+        return const Color(0xFFC62828);
+      case 'DELAYED':
+        return const Color(0xFFF57F17);
+      case 'OFFLINE':
+      default:
+        return const Color(0xFF616161);
+    }
+  }
+
+  Color _getFleetStatusBgColor(String status) {
+    switch (status.toUpperCase()) {
+      case 'IDLE':
+        return const Color(0xFFFFF3E0);
+      case 'ACTIVE':
+      case 'COLLECTING':
+      case 'MOVING':
+      case 'EN_ROUTE':
+      case 'IN_PROGRESS':
+        return const Color(0xFFE0F2F1);
+      case 'FULL':
+      case 'TRUCK_FULL':
+      case 'CAPACITY_FULL':
+        return const Color(0xFFE1F5FE);
+      case 'PAUSED':
+      case 'INTERRUPTED':
+      case 'ON_HOLD':
+      case 'STOPPED':
+        return const Color(0xFFFBE9E7);
+      case 'COMPLETED':
+      case 'FINISHED':
+        return const Color(0xFFE8F5E9);
+      case 'MAINTENANCE':
+      case 'ISSUE':
+      case 'BREAKDOWN':
+        return const Color(0xFFFFEBEE);
+      case 'DELAYED':
+        return const Color(0xFFFFF8E1);
+      case 'OFFLINE':
+      default:
+        return const Color(0xFFF5F5F5);
+    }
+  }
+
   Widget _buildOrganizedTruckCard(Map<dynamic, dynamic> truck) {
     final String tid = (truck['truckNumber'] ?? truck['truck_id'] ?? 'N/A').toString();
     final String license = (truck['plate_number'] ?? truck['plateNumber'] ?? truck['license_number'] ?? '').toString();
     final String driver = (truck['driver_name'] ?? truck['driverName'] ?? 'Driver').toString();
     final String status = (truck['status'] ?? 'IDLE').toString().toUpperCase();
     final bool isActive = status == 'ACTIVE' || status == 'COLLECTING';
-    final Color statusColor = isActive ? const Color(0xFF00796B) : Colors.grey.shade400;
+    final Color statusColor = _getFleetStatusColor(status);
+    final Color statusBgColor = _getFleetStatusBgColor(status);
 
     final double speed = (truck['speed'] ?? 0.0).toDouble();
     final double dist = (truck['distance'] ?? 0.0).toDouble();
     final double fuel = (truck['fuel_level'] ?? 0.0).toDouble();
     final int stops = (truck['stops_count'] ?? 0) as int;
 
-    String eta = isActive
-        ? "${PredictionEngine.estimateArrivalTime(dist > 0 ? dist : 2.5, [
-            speed > 5 ? speed : 15.0
-          ]).toStringAsFixed(0)} mins"
-        : "--";
+    final double etaMins = PredictionEngine.estimateArrivalTime(dist > 0 ? dist : 2.5, [speed > 5 ? speed : 15.0]);
+    final String eta = isActive ? "${etaMins.toStringAsFixed(0)} mins" : "--";
     String lastUpdate = truck['updatedAt'] != null ? "just now" : "Offline";
 
     final bool isBeingFollowed = _isFollowLocked && _followedTruckId?.toUpperCase() == tid.toUpperCase();
@@ -1492,9 +1666,11 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
                 Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                        color: statusColor.withAlpha(20), borderRadius: BorderRadius.circular(12)),
+                        color: statusBgColor,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: statusColor.withOpacity(0.3))),
                     child: Text(status,
-                        style: TextStyle(color: statusColor, fontSize: 9, fontWeight: FontWeight.w900))),
+                        style: TextStyle(color: statusColor, fontSize: 10, fontWeight: FontWeight.w900))),
                 if (isBeingFollowed) ...[
                   const SizedBox(height: 4),
                   Container(
@@ -1942,8 +2118,8 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
                           "Telemetry Status",
                           [
                             _buildGuideItem(Icons.circle, "Active: Collection", color: Colors.green),
-                            _buildGuideItem(Icons.circle, "Idle: Stationary", color: Colors.yellow),
-                            _buildGuideItem(Icons.circle, "Full: High Load", color: Colors.pinkAccent),
+                            _buildGuideItem(Icons.circle, "Idle / Collection Stop (3-5 min)", color: Colors.orange),
+                            _buildGuideItem(Icons.circle, "Full: High Load", color: Colors.blue),
                           ],
                           hasShadow: false,
                         ),
@@ -1968,8 +2144,8 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
                         "Telemetry Status",
                         [
                           _buildGuideItem(Icons.circle, "Active: Collection", color: Colors.green),
-                          _buildGuideItem(Icons.circle, "Idle: Stationary", color: Colors.yellow),
-                          _buildGuideItem(Icons.circle, "Full: High Load", color: Colors.pinkAccent),
+                          _buildGuideItem(Icons.circle, "Idle / Collection Stop (3-5 min)", color: Colors.orange),
+                          _buildGuideItem(Icons.circle, "Full: High Load", color: Colors.blue),
                         ],
                         hasShadow: false,
                       ),
@@ -2083,8 +2259,13 @@ class _ResidentTrackTruckScreenState extends State<ResidentTrackTruckScreen> wit
       child: Row(
         children: [
           Icon(icon, color: color, size: 18),
-          const SizedBox(width: 12),
-          Text(text, style: const TextStyle(fontSize: 14, color: Colors.grey, fontWeight: FontWeight.w600)),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(fontSize: 13, color: Colors.grey, fontWeight: FontWeight.w600),
+            ),
+          ),
         ],
       ),
     );

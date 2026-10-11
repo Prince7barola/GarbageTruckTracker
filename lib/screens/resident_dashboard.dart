@@ -13,6 +13,7 @@ import '../utils/app_theme.dart';
 import 'resident_track_truck_screen.dart';
 import 'resident_complaints_screen.dart';
 import 'resident_settings_screen.dart';
+import 'route_history_screen.dart';
 import '../utils/responsive.dart';
 import '../widgets/mapbox_view.dart';
 import '../widgets/fade_slide_entrance.dart';
@@ -266,35 +267,103 @@ class _ResidentDashboardState extends State<ResidentDashboard> with TickerProvid
 
     _truckSubscription?.cancel();
     _truckSubscription = _database.ref('truck_locations').onValue.listen((event) {
-      if (event.snapshot.exists) {
+      if (event.snapshot.exists && event.snapshot.value != null) {
         final Map data = event.snapshot.value as Map;
-        int activeCount = 0;
-        double minEta = double.infinity;
+        final Map<String, Map<dynamic, dynamic>> driverToLatestTruck = {};
         final int now = DateTime.now().millisecondsSinceEpoch;
 
         data.forEach((key, value) {
-          final val = value as Map;
-          final bool isOnlineField = val['isOnline'] == true;
-          final dynamic lastSeenRaw = val['lastSeen'];
-          final int lastSeen = lastSeenRaw is num ? lastSeenRaw.toInt() : 0;
-          final String status = (val['status'] ?? '').toString().toUpperCase();
+          if (value is Map) {
+            final val = Map<dynamic, dynamic>.from(value);
+            final String nodeKey = key.toString();
+            final String tid = (val['truck_id'] ?? nodeKey).toString().toUpperCase();
+            final String? dId = val['driver_id']?.toString() ?? val['driverId']?.toString();
+            final String dName = (val['driver_name'] ?? val['driverName'] ?? 'Driver').toString().trim();
+            final String dNameUpper = dName.toUpperCase();
+            final String driverKey = (dId != null && dId.isNotEmpty && dId != 'null') ? dId : dNameUpper;
 
-          // 2-minute freshness window
-          final bool isFresh = lastSeen > 0 && (now - lastSeen).abs() < 120000;
-          final bool isGenuinelyOnline = isOnlineField && isFresh;
+            final String role = (val['role'] ?? '').toString().toLowerCase();
+            final bool isExplicitNonDriver = (role == 'resident' || role == 'admin');
 
-          if (isGenuinelyOnline && (status == 'ACTIVE' || status == 'COLLECTING' || status == 'IDLE')) {
-            activeCount++;
-            if (_currentPosition != null && val['latitude'] != null && val['longitude'] != null) {
+            final String accountStatus = (val['account_status'] ?? val['status'] ?? '').toString().toLowerCase();
+            final dynamic isArchivedRaw = val['is_archived'] ?? val['isArchived'];
+            final bool isNodeArchived = accountStatus == 'archived' ||
+                isArchivedRaw == 1 ||
+                isArchivedRaw == '1' ||
+                isArchivedRaw == true ||
+                isArchivedRaw == 'true';
+
+            if (isExplicitNonDriver ||
+                isNodeArchived ||
+                dNameUpper.contains("ARIAN JOY") ||
+                dNameUpper.contains("JOHN DRIVER") ||
+                dNameUpper.contains("SYSTEM ADMIN") ||
+                tid.contains("ADMIN") ||
+                tid.contains("SYSTEM") ||
+                tid.contains("USER")) {
+              return; // Filter out non-drivers, residents, admins, and test accounts
+            }
+
+            final String status = (val['status'] ?? 'OFFLINE').toString().toUpperCase();
+            final bool isOnlineField = val['isOnline'] == true || val['is_online'] == true || val['is_online'] == 1;
+            final dynamic lastSeenRaw = val['lastSeen'] ?? val['last_seen'];
+            int lastSeen = 0;
+            if (lastSeenRaw is num) {
+              lastSeen = lastSeenRaw.toInt();
+            } else if (lastSeenRaw != null) {
+              final parsed = DateTime.tryParse(lastSeenRaw.toString().replaceAll(' ', 'T'));
+              if (parsed != null) lastSeen = parsed.millisecondsSinceEpoch;
+            }
+
+            final dynamic loginTimeRaw = val['login_time'] ?? val['loginTime'];
+            int loginTime = 0;
+            if (loginTimeRaw is num) {
+              loginTime = loginTimeRaw.toInt();
+            }
+
+            // Session Limit: 12 Hours
+            final bool isSessionValid = loginTime == 0 || (now - loginTime) < 43200000;
+            final bool isFresh = lastSeen == 0 || (now - lastSeen).abs() < 900000;
+
+            final bool isGenuinelyOnline = isOnlineField &&
+                status != 'OFFLINE' &&
+                status != 'COMPLETED' &&
+                status != 'FINISHED' &&
+                isSessionValid &&
+                isFresh;
+
+            if (isGenuinelyOnline) {
+              if (!driverToLatestTruck.containsKey(driverKey)) {
+                driverToLatestTruck[driverKey] = val;
+              } else {
+                final existing = driverToLatestTruck[driverKey]!;
+                final int existingSeen = (existing['lastSeen'] ?? 0) as int;
+                if (lastSeen >= existingSeen) {
+                  driverToLatestTruck[driverKey] = val;
+                }
+              }
+            }
+          }
+        });
+
+        final List<Map<dynamic, dynamic>> onlineTrucks = driverToLatestTruck.values.toList();
+        final int activeCount = onlineTrucks.length;
+        double minEta = double.infinity;
+
+        for (var val in onlineTrucks) {
+          if (_currentPosition != null && val['latitude'] != null && val['longitude'] != null) {
+            final double lat = (val['latitude'] as num).toDouble();
+            final double lng = (val['longitude'] as num).toDouble();
+            if (lat != 0.0 && lng != 0.0) {
               try {
-                double dist = geo.Geolocator.distanceBetween(_currentPosition!.latitude, _currentPosition!.longitude, (val['latitude'] as num).toDouble(), (val['longitude'] as num).toDouble()) / 1000.0;
+                double dist = geo.Geolocator.distanceBetween(_currentPosition!.latitude, _currentPosition!.longitude, lat, lng) / 1000.0;
                 double speed = (val['speed'] ?? 15.0).toDouble();
                 double eta = PredictionEngine.estimateArrivalTime(dist, [speed > 5 ? speed : 15.0]);
                 if (eta < minEta) minEta = eta;
               } catch (_) {}
             }
           }
-        });
+        }
         String etaDisplay = "--";
         if (activeCount > 0) {
           etaDisplay = minEta != double.infinity ? "${minEta.toStringAsFixed(0)} mins" : "Approaching";
@@ -318,11 +387,34 @@ class _ResidentDashboardState extends State<ResidentDashboard> with TickerProvid
       }
     });
 
+    _fetchTotalDriversFromUserManagement();
+
+    _fetchTotalDriversFromUserManagement();
+
     _totalTruckSubscription?.cancel();
-    _totalTruckSubscription = _database.ref('trucks').onValue.listen((event) {
-      if (event.snapshot.exists) {
+    _totalTruckSubscription = _database.ref('users').onValue.listen((event) {
+      if (event.snapshot.exists && event.snapshot.value != null) {
         final Map data = event.snapshot.value as Map;
-        if (mounted) setState(() => _totalTrucks = data.length);
+        int driverCount = 0;
+        data.forEach((key, value) {
+          if (value is Map) {
+            final String role = (value['role'] ?? '').toString().toLowerCase();
+            final String status = (value['account_status'] ?? '').toString().toLowerCase();
+            final dynamic isArchivedRaw = value['is_archived'] ?? value['isArchived'];
+            final bool isArchived = status == 'archived' ||
+                isArchivedRaw == 1 ||
+                isArchivedRaw == '1' ||
+                isArchivedRaw == true ||
+                isArchivedRaw == 'true';
+
+            if (!isArchived && role == 'driver') {
+              driverCount++;
+            }
+          }
+        });
+        if (mounted && driverCount > 0) {
+          setState(() => _totalTrucks = math.max(driverCount, _totalTrucks));
+        }
       }
     });
 
@@ -343,6 +435,42 @@ class _ResidentDashboardState extends State<ResidentDashboard> with TickerProvid
         if (mounted) setState(() => _unreadNotificationsCount = unread);
       }
     });
+  }
+
+  Future<void> _fetchTotalDriversFromUserManagement() async {
+    try {
+      final response = await ApiService().getUsers();
+      if (response.data != null && response.data['success'] == true) {
+        final List users = response.data['users'] ?? [];
+        final List residents = response.data['residents'] ?? [];
+        final allList = [...users, ...residents];
+
+        int driverCount = 0;
+        for (var user in allList) {
+          if (user is Map) {
+            final String role = (user['role'] ?? '').toString().toLowerCase().trim();
+            final String status = (user['account_status'] ?? user['status'] ?? '').toString().toLowerCase();
+            final dynamic isArchivedRaw = user['is_archived'] ?? user['isArchived'];
+            final bool isArchived = status == 'archived' ||
+                isArchivedRaw == 1 ||
+                isArchivedRaw == '1' ||
+                isArchivedRaw == true ||
+                isArchivedRaw == 'true';
+
+            if (role == 'driver' && !isArchived) {
+              driverCount++;
+            }
+          }
+        }
+        if (mounted && driverCount > 0) {
+          setState(() {
+            _totalTrucks = math.max(driverCount, _totalTrucks);
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint("Error fetching driver count from User Management API: $e");
+    }
   }
 
   void _handleLogout() {
@@ -601,6 +729,7 @@ class _ResidentDashboardState extends State<ResidentDashboard> with TickerProvid
           });
         })),
         FadeSlideEntrance(key: const ValueKey("settings"), child: ResidentSettingsScreen(isEmbedded: true, showDataManagementOnLoad: _shouldShowDataManagement, onBack: () => setState(() { _selectedIndex = 0; _shouldShowDataManagement = false; }), onProfileUpdate: _loadUser)),
+        FadeSlideEntrance(key: const ValueKey("history"), child: RouteHistoryScreen(isEmbedded: true, onBack: () => setState(() => _selectedIndex = 0))),
     ]);
   }
 
@@ -923,6 +1052,8 @@ class _ResidentDashboardState extends State<ResidentDashboard> with TickerProvid
                                       ),
                                     ),
                                     _buildActionCard("File Complaint", "Report collection issues", Icons.feedback_rounded, const Color(0xFFFFF0F2), const Color(0xFFFF1744)),
+                                    const SizedBox(height: 12),
+                                    _buildActionCard("GIS Route History", "Confirm collection history & truck visits in your area", Icons.route_rounded, const Color(0xFFE0F2F1), const Color(0xFF00796B)),
                                     const SizedBox(height: 24),
                                     _buildTransactionHistoryCard(),
                                     const SizedBox(height: 24),
@@ -1197,6 +1328,8 @@ class _ResidentDashboardState extends State<ResidentDashboard> with TickerProvid
                       _buildSidebarItem(1, Icons.location_on_rounded, 'Truck Tracking'),
                       const SizedBox(height: 8),
                       _buildSidebarItem(2, Icons.chat_bubble_outline_rounded, 'Report Complaints'),
+                      const SizedBox(height: 8),
+                      _buildSidebarItem(4, Icons.route_rounded, 'GIS Route History'),
                       const SizedBox(height: 8),
                       _buildSidebarItem(3, Icons.person_outline_rounded, 'Account Settings'),
                     ],
@@ -1705,6 +1838,8 @@ class _ResidentDashboardState extends State<ResidentDashboard> with TickerProvid
       onTap: () {
         if (title.contains("Track")) {
           setState(() => _selectedIndex = 1);
+        } else if (title.contains("Route") || title.contains("History") || title.contains("GIS")) {
+          setState(() => _selectedIndex = 4);
         } else if (title.contains("Settings")) {
           setState(() => _selectedIndex = 3);
         } else if (title.contains("Complaint")) {

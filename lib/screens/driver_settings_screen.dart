@@ -3570,12 +3570,14 @@ class _DriverSettingsScreenState extends State<DriverSettingsScreen> with Ticker
           if (driverIdStr.isNotEmpty)
             FirebaseDatabase.instance.ref('users/$driverIdStr').update({
               'isOnline': false,
+              'status': 'OFFLINE',
               'lastSeen': ServerValue.timestamp,
             }).timeout(const Duration(seconds: 2), onTimeout: () => debugPrint("User presence logout update timed out")),
           if (truckId != null && truckId != "Unknown" && truckId.isNotEmpty)
             FirebaseDatabase.instance.ref('truck_locations/$truckId').update({
               'status': 'OFFLINE',
               'isOnline': false,
+              'speed': 0,
               'lastSeen': ServerValue.timestamp
             }).timeout(const Duration(seconds: 2), onTimeout: () => debugPrint("Settings logout update timed out")),
           SessionManager.logout(),

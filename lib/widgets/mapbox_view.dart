@@ -330,15 +330,23 @@ class _MapboxViewState extends State<MapboxView> {
         final int now = DateTime.now().millisecondsSinceEpoch;
 
         data.forEach((key, value) {
-          final val = value as Map;
-          final bool isOnlineField = val['isOnline'] == true;
-          final dynamic lastSeenRaw = val['lastSeen'];
+          if (value is! Map) return;
+          final val = value;
+          final String status = (val['status'] ?? 'ACTIVE').toString().toUpperCase();
+          final double lat = double.tryParse(val['latitude']?.toString() ?? val['lat']?.toString() ?? '0') ?? 0.0;
+          final double lng = double.tryParse(val['longitude']?.toString() ?? val['lng']?.toString() ?? '0') ?? 0.0;
+          final bool hasValidCoords = (lat != 0.0 && lng != 0.0);
+
+          final bool isOnlineField = val['isOnline'] == true || val['is_online'] == true || val['is_online'] == 1;
+          final dynamic lastSeenRaw = val['lastSeen'] ?? val['last_seen'];
           final int lastSeen = lastSeenRaw is num ? lastSeenRaw.toInt() : 0;
           
-          // 2-minute freshness window
-          final bool isFresh = lastSeen > 0 && (now - lastSeen).abs() < 120000;
+          // 15-minute freshness window for active live collection tracking
+          final bool isFresh = lastSeen == 0 || (now - lastSeen).abs() < 900000;
           
-          if (isOnlineField && isFresh) {
+          if ((isOnlineField || status == 'ACTIVE' || status == 'COLLECTING' || status == 'IDLE' || status == 'FULL') &&
+              status != 'OFFLINE' && status != 'COMPLETED' && status != 'FINISHED' &&
+              hasValidCoords && isFresh) {
             trucks[key.toString()] = val;
           }
         });

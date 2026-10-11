@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:firebase_database/firebase_database.dart';
 import '../api/api_service.dart';
 import '../utils/app_theme.dart';
 import '../utils/responsive.dart';
@@ -1484,6 +1485,43 @@ class _UserManagementScreenState extends State<UserManagementScreen> with Ticker
     try {
       final response = await _apiService.archiveUser(int.parse(id.toString()), role.toString(), archive);
       if (response.data['success'] == true) {
+        final String uidStr = id.toString();
+
+        // Synchronize with Firebase Realtime Database
+        if (archive) {
+          await FirebaseDatabase.instance.ref('users/$uidStr').update({
+            'is_archived': 1,
+            'account_status': 'archived',
+            'isOnline': false,
+            'status': 'OFFLINE',
+          });
+
+          // Also mark any location node registered to this driver as OFFLINE & archived
+          final locsSnap = await FirebaseDatabase.instance.ref('truck_locations').get();
+          if (locsSnap.exists && locsSnap.value is Map) {
+            final Map locs = locsSnap.value as Map;
+            locs.forEach((tKey, tVal) {
+              if (tVal is Map) {
+                final String dId = (tVal['driver_id'] ?? tVal['driverId'] ?? '').toString();
+                if (dId == uidStr) {
+                  FirebaseDatabase.instance.ref('truck_locations/$tKey').update({
+                    'is_archived': 1,
+                    'isOnline': false,
+                    'status': 'OFFLINE',
+                    'latitude': 0.0,
+                    'longitude': 0.0,
+                  });
+                }
+              }
+            });
+          }
+        } else {
+          await FirebaseDatabase.instance.ref('users/$uidStr').update({
+            'is_archived': 0,
+            'account_status': 'active',
+          });
+        }
+
         if (mounted) {
           final String msg = archive ? "Account archived successfully!" : "Account restored successfully!";
           CustomNotification.showTopNotification(context, msg, false);

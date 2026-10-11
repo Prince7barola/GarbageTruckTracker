@@ -186,7 +186,7 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
             final dynamic ts = notifMap['timestamp'];
             int timeMs = ts is num ? ts.toInt() : 0;
 
-            if (purok.contains('balintawak') || purok.isEmpty) {
+            if ((purok.contains('balintawak') || purok.isEmpty) && _isGarbageCollectionAlert(notifMap)) {
               if (timeMs >= highestTime) {
                 highestTime = timeMs;
                 bestMatch = notifMap;
@@ -224,8 +224,6 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
           final String tid = (loc['truck_id'] ?? loc['truckId'] ?? loc['id'] ?? '').toString().toUpperCase().trim();
           final String driverName = (loc['driver_name'] ?? loc['driverName'] ?? loc['full_name'] ?? '').toString();
 
-          if (driverName.toLowerCase().contains("john driver")) continue;
-
           final double lat = double.tryParse(loc['latitude']?.toString() ?? loc['lat']?.toString() ?? '0') ?? 0.0;
           final double lng = double.tryParse(loc['longitude']?.toString() ?? loc['lng']?.toString() ?? '0') ?? 0.0;
           final String status = (loc['status'] ?? 'ACTIVE').toString().toUpperCase();
@@ -244,7 +242,8 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
           final dynamic secondsAgoRaw = loc['seconds_ago'] ?? loc['secondsAgo'];
           final int secondsAgo = secondsAgoRaw is num ? secondsAgoRaw.toInt() : (timestampMs > 0 ? ((now - timestampMs) / 1000).abs().toInt() : -1);
 
-          final bool isOnline = loc['isOnline'] == true || loc['is_online'] == true || loc['is_online'] == 1;
+          final bool isOnline = status != 'OFFLINE' &&
+              (loc['isOnline'] == true || loc['is_online'] == true || loc['is_online'] == 1 || loc['is_online'] == null);
 
           if (tid.isNotEmpty) {
             phpMap[tid] = {
@@ -300,10 +299,8 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
       final String status = (truckData['status'] ?? 'ACTIVE').toString().toUpperCase();
 
       final String driverName = (truckData['driver_name'] ?? truckData['driverName'] ?? '').toString();
-      final String driverLower = driverName.toLowerCase();
       final String tidLower = tid.toLowerCase();
-      if (driverLower.contains("john driver") || driverLower.contains("test") || driverLower.contains("mock") || driverLower.contains("sample") || driverLower.contains("dummy")) return;
-      if (tidLower.contains("test") || tidLower.contains("mock") || tidLower.contains("sample") || tidLower.contains("dummy")) return;
+      if (tidLower.contains("admin") || tidLower.contains("system") || tidLower.contains("user")) return;
 
       final double lat = double.tryParse(truckData['latitude']?.toString() ?? truckData['lat']?.toString() ?? '0') ?? 0.0;
       final double lng = double.tryParse(truckData['longitude']?.toString() ?? truckData['lng']?.toString() ?? '0') ?? 0.0;
@@ -456,7 +453,6 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
 
   Future<void> _updateMapMarkers([BuildContext? ctx]) async {
     if (_mapboxMap == null || _isUpdatingMarkers) return;
-    _isUpdatingMarkers = true;
 
     final BuildContext? activeContext = ctx ?? (mounted ? context : null);
     final double screenWidth = activeContext != null
@@ -466,6 +462,8 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
 
     try {
       final style = _mapboxMap!.style;
+      if (!await style.isStyleLoaded()) return;
+      _isUpdatingMarkers = true;
       final String sourceId = "web-trucks-source";
       final String circleLayerId = "web-trucks-circle-layer";
 
@@ -603,7 +601,9 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
         }
       } catch (_) {}
     } catch (e) {
-      debugPrint("[WEB GIS] Marker update error: $e");
+      if (!e.toString().contains("Style is not done loading")) {
+        debugPrint("[WEB GIS] Marker update error: $e");
+      }
     } finally {
       _isUpdatingMarkers = false;
     }
@@ -1573,6 +1573,114 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
     );
   }
 
+  /// Filter logic to restrict displayed alerts exclusively to garbage collection-related information.
+  /// Ignores non-collection alerts such as maintenance alerts, complaints, driver notices,
+  /// registration requests, and general system announcements.
+  bool _isGarbageCollectionAlert(Map<String, dynamic> notif) {
+    final String type = (notif['type'] ?? '').toString().toLowerCase();
+    final String title = (notif['title'] ?? '').toString().toLowerCase();
+    final String message = (notif['message'] ?? '').toString().toLowerCase();
+    final String category = (notif['category'] ?? '').toString().toLowerCase();
+    final String targetRole = (notif['targetRole'] ?? '').toString().toLowerCase();
+
+    // 1. Explicitly exclude non-collection types, categories, or target roles
+    if (type.contains('maintenance') ||
+        type.contains('complaint') ||
+        type.contains('registration') ||
+        type.contains('issue') ||
+        category.contains('maintenance') ||
+        category.contains('complaint') ||
+        category.contains('system') ||
+        targetRole == 'driver' ||
+        targetRole == 'admin') {
+      return false;
+    }
+
+    // 2. Explicitly exclude non-collection keywords in title or message
+    const nonCollectionKeywords = [
+      'maintenance',
+      'service due',
+      'oil change',
+      'tire rotation',
+      'complaint',
+      'issue report',
+      'spilled waste report',
+      'registration',
+      'driver application',
+      'account approval',
+      'system notification',
+      'general announcement',
+      'system alert',
+    ];
+
+    for (final kw in nonCollectionKeywords) {
+      if (title.contains(kw) || message.contains(kw)) {
+        return false;
+      }
+    }
+
+    // 3. Explicitly include known garbage collection alert types
+    const collectionTypes = [
+      'collection_alert',
+      'auto_arrival',
+      'auto_approach',
+      'manual_alert',
+      'collection_schedule',
+      'schedule',
+      'schedule_alert',
+      'garbage_collection',
+      'pickup_reminder',
+      'collection_reminder',
+      'truck_alert',
+      'entry',
+      'exit',
+    ];
+
+    if (collectionTypes.contains(type)) {
+      return true;
+    }
+
+    // 4. Keyword matching for garbage collection terms in title, message, or type
+    const collectionKeywords = [
+      'garbage',
+      'waste',
+      'collection',
+      'pickup',
+      'truck',
+      'schedule',
+      'route',
+      'approaching',
+      'arrived',
+      'collecting',
+      'ongoing',
+      'reminder',
+    ];
+
+    for (final kw in collectionKeywords) {
+      if (title.contains(kw) || message.contains(kw) || type.contains(kw)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /// Checks if a notification timestamp is still relevant (e.g., received within the last 12 hours).
+  bool _isNotificationRelevant(Map<String, dynamic>? notif) {
+    if (notif == null) return false;
+    final dynamic ts = notif['timestamp'];
+    int timeMs = 0;
+    if (ts is num) {
+      timeMs = ts.toInt();
+    } else if (ts != null) {
+      final parsed = DateTime.tryParse(ts.toString());
+      if (parsed != null) timeMs = parsed.millisecondsSinceEpoch;
+    }
+    if (timeMs <= 0) return true;
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    return (now - timeMs).abs() <= 12 * 3600 * 1000;
+  }
+
   // --- ANNOUNCEMENT / GARBAGE COLLECTION ALERT WIDGET ---
   Widget _buildCollectionAnnouncementCard({bool isMobile = false}) {
     if (_isAlertDismissed) {
@@ -1613,9 +1721,16 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
       );
     }
 
-    // Determine Alert Content based on active truck status or real-time notifications
+    // Determine Alert Content strictly for garbage collection alerts when an active truck exists
     final bool isTruckActive = _activeTruckCount > 0;
     final String truckId = _primaryTruck != null ? (_primaryTruck!['truck_id'] ?? 'GT-001') : 'TR-005';
+
+    // A garbage collection alert is active ONLY when an active/online truck exists AND a relevant garbage collection alert exists
+    final bool hasValidCollectionNotif = isTruckActive &&
+        _latestNotification != null &&
+        (_latestNotification!['title'] != null || _latestNotification!['message'] != null) &&
+        _isGarbageCollectionAlert(_latestNotification!) &&
+        _isNotificationRelevant(_latestNotification!);
 
     String alertTitle;
     String alertMessage;
@@ -1624,27 +1739,50 @@ class _StandaloneGisWebScreenState extends State<StandaloneGisWebScreen> with Ti
     Color statusTagText;
     IconData alertIcon;
 
-    if (isTruckActive) {
+    if (hasValidCollectionNotif) {
+      alertTitle = (_latestNotification!['title'] ?? "Garbage Collection Alert").toString();
+      alertMessage = (_latestNotification!['message'] ?? "Notice for Barangay Balintawak residents.").toString();
+
+      final String notifType = (_latestNotification!['type'] ?? '').toString().toLowerCase();
+      final String msgLower = alertMessage.toLowerCase();
+      final String titleLower = alertTitle.toLowerCase();
+
+      if (notifType == 'auto_arrival' || msgLower.contains('arrived') || titleLower.contains('arrived')) {
+        statusTag = "Arrived";
+        statusTagBg = const Color(0xFFE8F5E9);
+        statusTagText = const Color(0xFF2E7D32);
+        alertIcon = Icons.local_shipping_rounded;
+      } else if (notifType == 'auto_approach' || msgLower.contains('approaching') || titleLower.contains('approaching')) {
+        statusTag = "Approaching";
+        statusTagBg = const Color(0xFFFFF3E0);
+        statusTagText = const Color(0xFFE65100);
+        alertIcon = Icons.local_shipping_rounded;
+      } else if (msgLower.contains('schedule') || titleLower.contains('schedule')) {
+        statusTag = "Schedule";
+        statusTagBg = const Color(0xFFE3F2FD);
+        statusTagText = const Color(0xFF1565C0);
+        alertIcon = Icons.schedule_rounded;
+      } else {
+        statusTag = "Collection Alert";
+        statusTagBg = const Color(0xFFE0F2F1);
+        statusTagText = const Color(0xFF004D40);
+        alertIcon = Icons.delete_outline_rounded;
+      }
+    } else if (isTruckActive) {
       alertTitle = "Garbage Collection Ongoing";
       alertMessage = "Garbage truck ($truckId) is actively collecting in Barangay Balintawak. Please place your waste at designated pickup points.";
       statusTag = "Ongoing";
       statusTagBg = const Color(0xFFE8F5E9);
       statusTagText = const Color(0xFF2E7D32);
       alertIcon = Icons.delete_outline_rounded;
-    } else if (_latestNotification != null && (_latestNotification!['title'] != null || _latestNotification!['message'] != null)) {
-      alertTitle = (_latestNotification!['title'] ?? "Collection Announcement").toString();
-      alertMessage = (_latestNotification!['message'] ?? "Notice for Barangay Balintawak residents.").toString();
-      statusTag = "Notice";
-      statusTagBg = const Color(0xFFE3F2FD);
-      statusTagText = const Color(0xFF1565C0);
-      alertIcon = Icons.campaign_rounded;
     } else {
-      alertTitle = "Barangay Collection Schedule";
-      alertMessage = "Regular garbage collection is scheduled for Barangay Balintawak. Please prepare segregated waste in proper bins.";
-      statusTag = "Mon - Sat";
-      statusTagBg = const Color(0xFFFFF3E0);
-      statusTagText = const Color(0xFFE65100);
-      alertIcon = Icons.schedule_rounded;
+      // Clean empty state when NO online/active trucks are available
+      alertTitle = "Garbage Collection Alerts";
+      alertMessage = "No garbage collection alerts available.";
+      statusTag = "No Alerts";
+      statusTagBg = const Color(0xFFECEFF1);
+      statusTagText = const Color(0xFF546E7A);
+      alertIcon = Icons.notifications_none_rounded;
     }
 
     if (isMobile) {

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -508,6 +509,14 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
     _loadPuroks(); // Ensure purok configs are loaded as early as possible
     _setupUserListener();
 
+    int? storedLoginTime = await SessionManager.getLoginTimestamp();
+    final int nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (storedLoginTime == null || storedLoginTime == 0 || (nowMs - storedLoginTime) >= 43200000) {
+      storedLoginTime = nowMs;
+      await SessionManager.saveLoginTimestamp(storedLoginTime);
+    }
+    _driverLoginTimestamp = storedLoginTime;
+
     _loadMaintenanceData(truckId);
     _setupTruckListener();
     _setupListeners();
@@ -515,32 +524,88 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
     _startTracking();
     _startHeartbeatTimer();
 
-    // 3. Update online presence and Restore session in PARALLEL
-    // These are the heaviest awaited tasks
+    // 3. Obtain initial position & update online presence in PARALLEL
     try {
-      await Future.wait([
-        if (driverIdStr.isNotEmpty)
-          _database.ref('users/$driverIdStr').update({
-            'isOnline': true,
-            'status': 'ACTIVE',
-            'lastSeen': ServerValue.timestamp,
-            'name': _user?.name,
-            'username': _user?.username,
-            'role': _user?.role ?? 'driver',
-          }),
-        if (truckId != "Unknown" && truckId != "UNKNOWN" && truckId != "None" && truckId.isNotEmpty)
-          _database.ref('truck_locations').child(truckId).update({
-            'isOnline': true,
-            'status': 'ACTIVE',
-            'lastSeen': ServerValue.timestamp,
-            'driver_id': _user?.userId,
-            'driver_name': _user?.name,
-            'truck_id': truckId,
-            'plate_number': _truckPlateNumber,
-          }),
-        _restoreTripSession(truckId, driverIdStr),
-      ]);
-      debugPrint("[DRIVER_LOGIN_PRESENCE] Set driver UID $driverIdStr online = true, truck = $truckId");
+      Position? initPos;
+      try {
+        initPos = await Geolocator.getLastKnownPosition();
+        initPos ??= await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.medium,
+          timeLimit: const Duration(seconds: 2),
+        );
+      } catch (_) {}
+
+      double initLat = initPos?.latitude ?? 13.9565;
+      double initLng = initPos?.longitude ?? 121.1620;
+
+      // Sanitize out-of-bounds (e.g. San Jose IP location) to Balintawak
+      if (initLat < 13.91 || initLat > 14.02 || initLng < 121.13 || initLng > 121.19) {
+        initLat = 13.9565;
+        initLng = 121.1620;
+      }
+
+      if (mounted && initPos != null) {
+        setState(() {
+          _currentPosition = Position(
+            latitude: initLat,
+            longitude: initLng,
+            timestamp: DateTime.now(),
+            accuracy: initPos!.accuracy,
+            altitude: initPos.altitude,
+            altitudeAccuracy: initPos.altitudeAccuracy,
+            heading: initPos.heading,
+            headingAccuracy: initPos.headingAccuracy,
+            speed: initPos.speed,
+            speedAccuracy: initPos.speedAccuracy,
+          );
+        });
+      }
+
+      final List<Future<dynamic>> initFutures = [];
+      if (driverIdStr.isNotEmpty) {
+        initFutures.add(_database.ref('users/$driverIdStr').update({
+          'isOnline': true,
+          'status': _status.isEmpty ? 'ACTIVE' : _status,
+          'login_time': _driverLoginTimestamp,
+          'lastSeen': ServerValue.timestamp,
+          'name': _user?.name,
+          'username': _user?.username,
+          'role': _user?.role ?? 'driver',
+        }));
+      }
+      if (truckId != "Unknown" && truckId != "UNKNOWN" && truckId != "None" && truckId.isNotEmpty) {
+        initFutures.add(_database.ref('truck_locations').child(truckId).update({
+          'isOnline': true,
+          'status': _status.isEmpty ? 'ACTIVE' : _status,
+          'login_time': _driverLoginTimestamp,
+          'lastSeen': ServerValue.timestamp,
+          'driver_id': _user?.userId,
+          'driver_name': _user?.name,
+          'truck_id': truckId,
+          'plate_number': _truckPlateNumber,
+          'latitude': initLat,
+          'longitude': initLng,
+        }));
+        final int uId = _user?.userId is int ? (_user!.userId as int) : int.tryParse(_user?.userId.toString() ?? '0') ?? 0;
+        if (uId > 0) {
+          initFutures.add(_apiService.updateLocation(
+            userId: uId,
+            latitude: initLat,
+            longitude: initLng,
+            truckId: truckId,
+            speed: 0.0,
+            status: _status.isEmpty ? 'ACTIVE' : _status,
+            isFull: false,
+          ).catchError((e) {
+            debugPrint("PHP init location error: $e");
+            return null;
+          }));
+        }
+      }
+      initFutures.add(_restoreTripSession(truckId, driverIdStr));
+
+      await Future.wait(initFutures);
+      debugPrint("[DRIVER_LOGIN_PRESENCE] Set driver UID $driverIdStr online = true, truck = $truckId, lat = $initLat, lng = $initLng");
     } catch (e) {
       debugPrint("Initialization error: $e");
     }
@@ -1210,7 +1275,8 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
         'lastSeen': ServerValue.timestamp,
       });
 
-      await _database.ref('driver_routes').child(_sessionId!).set({
+      final String node = _isSimulationMode ? 'simulation_routes' : 'driver_routes';
+      await _database.ref(node).child(_sessionId!).set({
         'truck_id': truckId,
         'driver_id': driverId,
         'driver_name': _user?.name ?? 'Driver',
@@ -1219,6 +1285,7 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
         'total_distance': 0.0, // PERSISTENCE: Track distance here too
         'route_status': 'ACTIVE',
         'isOnline': true,
+        'is_simulation': _isSimulationMode,
         'timestamp': ServerValue.timestamp,
         'date': DateFormat('yyyy-MM-dd').format(DateTime.now()),
         'maintenanceProcessed': false,
@@ -1301,8 +1368,8 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
       return;
     }
 
-    if (pos.accuracy > 50 && !_isSimulationMode) {
-      debugPrint("[GPS REJECTED] Poor Accuracy: ${pos.accuracy.toStringAsFixed(1)}m (Max threshold: 50m)");
+    if (!kIsWeb && pos.accuracy > 200 && !_isSimulationMode) {
+      debugPrint("[GPS REJECTED] Poor Accuracy: ${pos.accuracy.toStringAsFixed(1)}m (Max threshold: 200m)");
       return;
     }
 
@@ -1359,8 +1426,9 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
     final truckId = _user?.preferredTruck ?? "Unknown";
     double speedKmH = (pos.speed * 3.6);
 
-    // Cumulative trip distance calculation (Filter micro-jitter < 1.5m)
-    double traveledKm = (stepDistMeters >= 1.5) ? (stepDistMeters / 1000.0) : 0.0;
+    // Cumulative trip distance calculation (Filter stationary micro-jitter < 1.5m and speed <= 1.0 km/h)
+    bool isMoving = speedKmH > 1.0 || _isSimulationMode;
+    double traveledKm = (isMoving && stepDistMeters >= 1.5) ? (stepDistMeters / 1000.0) : 0.0;
 
     if (mounted) {
       setState(() {
@@ -1629,7 +1697,8 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
 
     debugPrint("[ROUTE TRACKING] Appending GPS Point: Trip=$_sessionId | Lat=${pos.latitude.toStringAsFixed(6)} | Lng=${pos.longitude.toStringAsFixed(6)} | Acc=${pos.accuracy.toStringAsFixed(1)}m");
 
-    _database.ref('driver_routes').child(_sessionId!).child('route').push().set({
+    final String node = _isSimulationMode ? 'simulation_routes' : 'driver_routes';
+    _database.ref(node).child(_sessionId!).child('route').push().set({
       'tripId': _sessionId,
       'driverId': driverId,
       'truckId': truckId,
@@ -1642,9 +1711,10 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
       'speed': pos.speed * 3.6,
       'heading': pos.heading,
       'accuracy': pos.accuracy,
+      'is_simulation': _isSimulationMode,
       'timestamp': ts,
     }).then((_) {
-      debugPrint("[ROUTE TRACKING] Successfully persisted route point to driver_routes/$_sessionId/route");
+      debugPrint("[ROUTE TRACKING] Successfully persisted route point to $node/$_sessionId/route");
     }).catchError((err) {
       debugPrint("[ROUTE TRACKING] Firebase append error: $err");
     });
@@ -1662,24 +1732,47 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
     });
   }
 
+  int? _driverLoginTimestamp;
+
   void _startHeartbeatTimer() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
       if (!mounted || _user == null) {
         timer.cancel();
         return;
       }
+      final int now = DateTime.now().millisecondsSinceEpoch;
+
+      // 12-Hour Automatic Session Expiry Check
+      if (_driverLoginTimestamp != null && _driverLoginTimestamp! > 0) {
+        final int elapsedMs = now - _driverLoginTimestamp!;
+        // 12 hours = 12 * 3600 * 1000 = 43,200,000 ms
+        if (elapsedMs >= 43200000) {
+          debugPrint("[AUTO-LOGOUT] 12 hours session limit reached ($elapsedMs ms). Automatically logging out driver.");
+          timer.cancel();
+          if (mounted) {
+            CustomNotification.showTopNotification(context, "Session expired after 12 hours. Automatically logged out.", true);
+            _handleLogout();
+          }
+          return;
+        }
+      }
+
       final String driverIdStr = _user!.userId.toString();
       final String truckId = _user?.preferredTruck ?? "Unknown";
 
       _database.ref('users/$driverIdStr').update({
         'isOnline': true,
+        'status': _status,
+        'login_time': _driverLoginTimestamp,
         'lastSeen': ServerValue.timestamp,
       });
 
       if (truckId != "Unknown" && _status != "OFFLINE") {
         _database.ref('truck_locations').child(truckId).update({
           'isOnline': true,
+          'status': _status,
+          'login_time': _driverLoginTimestamp,
           'lastSeen': ServerValue.timestamp,
           'updatedAt': DateTime.now().toIso8601String(),
         });
@@ -1689,14 +1782,26 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
 
   Future<void> _updateTripStatus(String newStatus) async {
     final truckId = _user?.preferredTruck ?? "Unknown";
-    
-    // VALIDATION: Changing status must NOT change weekly progress
+    final String driverIdStr = _user?.userId.toString() ?? "";
+    final bool isOffline = newStatus.toUpperCase() == 'OFFLINE';
+
     debugPrint("[STATUS] Changing truck status to $newStatus. Weekly progress preserved.");
 
     await _database.ref('truck_locations').child(truckId).update({
       'status': newStatus.toUpperCase(),
+      'isOnline': !isOffline,
+      'lastSeen': ServerValue.timestamp,
       'updatedAt': DateTime.now().toIso8601String(),
     });
+
+    if (driverIdStr.isNotEmpty) {
+      await _database.ref('users/$driverIdStr').update({
+        'status': newStatus.toUpperCase(),
+        'isOnline': !isOffline,
+        'lastSeen': ServerValue.timestamp,
+      });
+    }
+
     if (mounted) {
       setState(() => _status = newStatus);
     }
@@ -1825,12 +1930,14 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
       // 3. CLEANUP TRUCK LOCATIONS & RESET LOCAL STATE
       debugPrint("[FINISH] Step 3: Resetting truck_locations node and local session pointers...");
       await _database.ref('truck_locations').child(truckId).update({
-        'status': 'completed', 
+        'status': 'COMPLETED',
+        'isOnline': false,
         'current_session': null,
         'start_time': null,
         'distance': 0.0,
         'current_purok': null,
-        'visited_puroks': _completedCount, // Preserve the weekly count in live view if relevant
+        'visited_puroks': _completedCount, // Preserve the weekly count in live view
+        'lastSeen': ServerValue.timestamp,
       });
 
       _positionSubscription?.cancel();
@@ -1839,6 +1946,9 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
       // Clear persistent user doc reference
       await _database.ref('users/$driverId').update({
         'current_trip_id': null,
+        'status': 'COMPLETED',
+        'isOnline': false,
+        'lastSeen': ServerValue.timestamp,
       });
 
       if (mounted) {
@@ -2101,25 +2211,76 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
       _optimizedData = null;
       _positionSubscription?.cancel();
       _heartbeatTimer?.cancel();
-      
-      // 3. Run Firebase update and local logout in PARALLEL to eliminate sequential lag
-      await Future.wait([
-        if (driverIdStr.isNotEmpty)
-          _database.ref('users/$driverIdStr').update({
-            'isOnline': false,
-            'lastSeen': ServerValue.timestamp,
-          }).timeout(const Duration(seconds: 2), onTimeout: () => debugPrint("User presence logout update timed out")),
-        if (truckId != "Unknown" && truckId.isNotEmpty)
-          _database.ref('truck_locations').child(truckId).update({
-            'status': 'OFFLINE', 
-            'isOnline': false, 
-            'lastSeen': ServerValue.timestamp
-          }).timeout(const Duration(seconds: 2), onTimeout: () {
-             debugPrint("Firebase logout update timed out");
-             return;
-          }),
-        SessionManager.logout(),
-      ]);
+      _idleDetectionTimer?.cancel();
+
+      // 3. Run Firebase update, MySQL backend update, and local logout in PARALLEL to eliminate sequential lag
+      final List<Future<dynamic>> logoutFutures = [];
+      if (driverIdStr.isNotEmpty) {
+        logoutFutures.add(_database.ref('users/$driverIdStr').update({
+          'isOnline': false,
+          'status': 'OFFLINE',
+          'lastSeen': ServerValue.timestamp,
+        }).timeout(const Duration(seconds: 2), onTimeout: () => debugPrint("User presence logout update timed out")));
+      }
+      if (truckId != "Unknown" && truckId.isNotEmpty) {
+        logoutFutures.add(_database.ref('truck_locations').child(truckId).update({
+          'status': 'OFFLINE',
+          'isOnline': false,
+          'latitude': 0.0,
+          'longitude': 0.0,
+          'lastSeen': ServerValue.timestamp
+        }).timeout(const Duration(seconds: 2), onTimeout: () {
+           debugPrint("Firebase logout update timed out");
+           return;
+        }));
+        final int uId = _user?.userId is int ? (_user!.userId as int) : int.tryParse(_user?.userId.toString() ?? '0') ?? 0;
+        if (uId > 0) {
+          logoutFutures.add(_apiService.updateLocation(
+            userId: uId,
+            latitude: 0.0,
+            longitude: 0.0,
+            truckId: truckId,
+            speed: 0.0,
+            status: 'OFFLINE',
+            isFull: false,
+          ).catchError((e) {
+            debugPrint("PHP logout location error: $e");
+            return null;
+          }));
+        }
+      }
+
+      // Also set offline any matching truck_locations nodes by driver ID or name
+      try {
+        final locSnap = await _database.ref('truck_locations').get();
+        if (locSnap.exists && locSnap.value is Map) {
+          final Map locs = locSnap.value as Map;
+          locs.forEach((k, v) {
+            if (v is Map) {
+              final String nodeDId = (v['driver_id'] ?? v['driverId'] ?? '').toString();
+              final String nodeTId = (v['truck_id'] ?? k).toString();
+              final String nodeDName = (v['driver_name'] ?? v['driverName'] ?? '').toString().trim().toLowerCase();
+              final String myName = (_user?.name ?? '').trim().toLowerCase();
+
+              if ((nodeDId.isNotEmpty && nodeDId == driverIdStr) ||
+                  (nodeTId.isNotEmpty && nodeTId == truckId) ||
+                  (myName.isNotEmpty && nodeDName == myName)) {
+                logoutFutures.add(_database.ref('truck_locations/$k').update({
+                  'status': 'OFFLINE',
+                  'isOnline': false,
+                  'speed': 0,
+                  'lastSeen': ServerValue.timestamp,
+                }));
+              }
+            }
+          });
+        }
+      } catch (e) {
+        debugPrint("Error scanning truck_locations during logout: $e");
+      }
+      logoutFutures.add(SessionManager.logout());
+
+      await Future.wait(logoutFutures);
 
       debugPrint("[LIFECYCLE] LOGOUT DATA CLEARED");
 
@@ -2320,6 +2481,13 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
               currentSessionId: _sessionId,
             ),
           ),
+          FadeSlideEntrance(
+            key: const ValueKey("history"),
+            child: RouteHistoryScreen(
+              isEmbedded: true,
+              onBack: () => setState(() => _selectedIndex = 0),
+            ),
+          ),
         ]),
       );
     });
@@ -2415,8 +2583,8 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
                             child: Text("Quick Actions", style: TextStyle(fontSize: (screenWidth * 0.05).clamp(16.0, 18.0), fontWeight: FontWeight.w900, color: const Color(0xFF1A1A1A))),
                           ),
                           _buildActionCard(
-                            "Daily Routes", 
-                            "View assigned collection paths", 
+                            "GIS Route History",
+                            "Historical truck routes across puroks with status indicators.",
                             Icons.route_rounded, 
                             const Color(0xFFE3F2FD), 
                             const Color(0xFF2196F3),
@@ -2577,8 +2745,8 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
                                     ),
                                     const SizedBox(height: 16),
                                     _buildActionCard(
-                                      "Daily Routes", 
-                                      "View assigned collection paths", 
+                                      "GIS Route History",
+                                      "Historical truck routes across puroks with status indicators.",
                                       Icons.route_rounded, 
                                       const Color(0xFFE3F2FD), 
                                       const Color(0xFF2196F3),
@@ -3690,13 +3858,7 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
   }
 
   void _showDailyRoutes() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => const RouteHistoryScreen(),
-      ),
-    );
-  }
+    setState(() => _selectedIndex = 3);
   }
 
   void _showReportIssue() async {
@@ -4432,6 +4594,51 @@ class _DriverDashboardState extends State<DriverDashboard> with TickerProviderSt
 
   void _showFullConfirmation() async {
     _updateTripStatus("FULL");
+
+    // Save FULL event and trip load record
+    if (_sessionId != null) {
+      final String nowIso = DateTime.now().toIso8601String();
+      final String truckId = _user?.preferredTruck ?? "Unknown";
+
+      // Log event in Firebase
+      try {
+        await _database.ref('driver_routes/$_sessionId/events').push().set({
+          'event_type': 'FULL',
+          'description': 'Truck marked FULL by driver',
+          'timestamp': ServerValue.timestamp,
+          'recorded_at': nowIso,
+          'latitude': _currentPosition?.latitude,
+          'longitude': _currentPosition?.longitude,
+        });
+      } catch (_) {}
+
+      // Save or update FULL trip history record on backend MySQL
+      try {
+        final visitedPuroks = _purokStatus.entries
+            .where((e) => e.value is Map && (e.value['completed'] == true || e.value['visited'] == true))
+            .map((e) => e.key.replaceAll('_', '/'))
+            .toList();
+
+        _apiService.saveTripHistory({
+          'trip_id': _sessionId,
+          'driver_id': _user?.userId,
+          'driver_name': _user?.name ?? 'Driver',
+          'truck_id': truckId,
+          'route_name': visitedPuroks.isNotEmpty ? visitedPuroks.join(' · ') : 'Collection Route',
+          'route_status': 'FULL',
+          'full_time': nowIso,
+          'start_time': _startTime,
+          'finish_lat': _currentPosition?.latitude,
+          'finish_lng': _currentPosition?.longitude,
+          'total_distance_km': _distance,
+          'weight_kg': 5000.0,
+          'weight_type': 'ESTIMATED',
+          'areas_visited': visitedPuroks.join(' · '),
+        });
+      } catch (e) {
+        debugPrint("[FULL_TRIP_RECORD] Error saving trip record: $e");
+      }
+    }
   }
 
   void _showFinishConfirmation() async {

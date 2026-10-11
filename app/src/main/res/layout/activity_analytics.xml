@@ -385,7 +385,7 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
-            <!-- ETAs -->
+            <!-- ETA Performance -->
             <com.google.android.material.card.MaterialCardView
                 android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
                 app:cardCornerRadius="16dp"
@@ -393,15 +393,26 @@
                 app:cardUseCompatPadding="true"
                 app:strokeWidth="0dp">
                 <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:padding="16dp">
-                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Estimated Arrival Times" android:textColor="@color/status_green" android:textStyle="bold" />
-                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp">
-                        <TextView android:id="@+id/tv_eta_1_label" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Next Truck:" />
-                        <TextView android:id="@+id/tv_eta_1_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Tracking..." android:textColor="@color/status_green" android:textStyle="bold" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="ETA Performance" android:textColor="@color/status_green" android:textSize="16sp" android:textStyle="bold" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Notification timing accuracy" android:textColor="#64748B" android:textSize="12sp" />
+
+                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp" android:orientation="horizontal">
+                        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                            <TextView android:id="@+id/tv_eta_1_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="3.5 min" android:textColor="#0F172A" android:textSize="20sp" android:textStyle="bold" />
+                            <TextView android:id="@+id/tv_eta_1_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Average arrival error" android:textColor="#64748B" android:textSize="11sp" />
+                        </LinearLayout>
+                        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                            <TextView android:id="@+id/tv_eta_2_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="100%" android:textColor="#0F172A" android:textSize="20sp" android:textStyle="bold" />
+                            <TextView android:id="@+id/tv_eta_2_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="within ±5 min" android:textColor="#64748B" android:textSize="11sp" />
+                        </LinearLayout>
+                        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                            <TextView android:id="@+id/tv_eta_3_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="2" android:textColor="#0F172A" android:textSize="20sp" android:textStyle="bold" />
+                            <TextView android:id="@+id/tv_eta_3_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="evaluated visits" android:textColor="#64748B" android:textSize="11sp" />
+                        </LinearLayout>
                     </LinearLayout>
-                    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp">
-                        <TextView android:id="@+id/tv_eta_2_label" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Est. Time:" />
-                        <TextView android:id="@+id/tv_eta_2_value" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="N/A" android:textColor="@color/status_green" android:textStyle="bold" />
-                    </LinearLayout>
+
+                    <View android:layout_width="match_parent" android:layout_height="1dp" android:layout_marginTop="12dp" android:layout_marginBottom="8dp" android:background="#F1F5F9" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Based on matched notifications and GPS area entry." android:textColor="#94A3B8" android:textSize="10sp" />
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 

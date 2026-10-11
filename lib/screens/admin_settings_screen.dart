@@ -1116,15 +1116,20 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> with TickerPr
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.map_rounded, color: Color(0xFF00796B), size: 28),
-                          SizedBox(width: 12),
-                          Text(
-                            "Service Area Management",
-                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A)),
-                          ),
-                        ],
+                      Expanded(
+                        child: Row(
+                          children: [
+                            const Icon(Icons.map_rounded, color: Color(0xFF00796B), size: 28),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                "Service Area Management",
+                                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Color(0xFF1A1A1A)),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                       IconButton(
                         onPressed: () => Navigator.pop(dialogCtx),
@@ -1141,7 +1146,9 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> with TickerPr
                     ),
                   ),
                   const Divider(height: 24),
-                  Row(
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
                     children: [
                       ElevatedButton.icon(
                         onPressed: () {
@@ -1153,11 +1160,10 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> with TickerPr
                           backgroundColor: const Color(0xFF00796B),
                           foregroundColor: Colors.white,
                           elevation: 0,
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                       ),
-                      const SizedBox(width: 12),
                       OutlinedButton.icon(
                         onPressed: () async {
                           await _serviceAreaService.resetToDefaultBalintawakAreas();
@@ -1169,7 +1175,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> with TickerPr
                         style: OutlinedButton.styleFrom(
                           foregroundColor: const Color(0xFF00796B),
                           side: const BorderSide(color: Color(0xFF00796B)),
-                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                       ),
@@ -1274,9 +1280,12 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> with TickerPr
                                               ),
                                             ),
                                             const SizedBox(width: 8),
-                                            Text(
-                                              "Source: ${area.coordinateSource}",
-                                              style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+                                            Flexible(
+                                              child: Text(
+                                                "Source: ${area.coordinateSource}",
+                                                style: TextStyle(fontSize: 10, color: Colors.grey.shade500),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
                                             ),
                                           ],
                                         ),
@@ -2614,7 +2623,14 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> with TickerPr
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        child: Text(confirmText.toUpperCase(), style: const TextStyle(fontWeight: FontWeight.w900)),
+                        child: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            confirmText.toUpperCase(),
+                            style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
+                            maxLines: 1,
+                          ),
+                        ),
                       ),
                     ),
                   ],
